@@ -1,0 +1,7 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.log
+*.zip
+*.tar
+*.tar.gz
