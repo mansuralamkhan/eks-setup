@@ -1,4 +1,11 @@
-
+data "aws_ami" "eks_worker" {
+  most_recent = true
+  owners      = ["amazon"]
+  filter {
+    name   = "name"
+    values = ["amazon-eks-node-al2023-x86_64-standard-${var.cluster_version}-*"]
+  }
+}
 
 resource "aws_iam_role" "eks_cluster" {
   name = "${var.cluster_name}-eks-cluster-role"
@@ -31,7 +38,7 @@ resource "aws_eks_cluster" "this" {
     subnet_ids         = concat(var.private_subnet_ids, var.public_subnet_ids)
     endpoint_public_access = true
     endpoint_private_access = true
-    public_access_cidrs = ["223.185.131.204/32"]
+    public_access_cidrs = ["223.237.162.20/32"]
   }
 
   encryption_config {
@@ -82,12 +89,39 @@ resource "aws_iam_role_policy_attachment" "managed_node_group_policy" {
   role       = aws_iam_role.managed_node_group.name
   policy_arn = each.value
 }
+resource "aws_launch_template" "managed_nodes" {
+  name_prefix = "${var.cluster_name}-managed-lt-"
+  image_id    = data.aws_ami.eks_worker.id
+
+  user_data = base64encode(<<-EOT
+apiVersion: node.eks.aws/v1alpha1
+kind: NodeConfig
+spec:
+  cluster:
+    name: ${aws_eks_cluster.this.name}
+    apiServerEndpoint: ${aws_eks_cluster.this.endpoint}
+    certificateAuthority: ${aws_eks_cluster.this.certificate_authority[0].data}
+    cidr: ${aws_eks_cluster.this.kubernetes_network_config[0].service_ipv4_cidr}
+  kubelet:
+    config:
+      maxPods: 300
+EOT
+  )
+
+  tag_specifications {
+    resource_type = "instance"
+    tags = merge(var.tags, { Name = "${var.cluster_name}-managed-node" })
+  }
+}
+
 
 resource "aws_eks_node_group" "managed" {
   cluster_name    = aws_eks_cluster.this.name
   node_group_name = "${var.cluster_name}-managed-ng"
   node_role_arn   = aws_iam_role.managed_node_group.arn
   subnet_ids      = var.private_subnet_ids
+
+  
 
   scaling_config {
     desired_size = var.managed_node_desired_size
@@ -96,6 +130,10 @@ resource "aws_eks_node_group" "managed" {
   }
 
   instance_types = var.managed_node_instance_types
+  launch_template {
+    id      = aws_launch_template.managed_nodes.id
+    version = "$Latest"
+  }
 
   tags = var.tags
 
