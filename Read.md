@@ -29,4 +29,4 @@ aws ec2 describe-instances \
 kubectl set env daemonset aws-node -n kube-system ENABLE_PREFIX_DELEGATION=true
 kubectl set env daemonset aws-node -n kube-system --list | grep PREFIX
 
-kubectl describe node ip-10-0-4-131.ap-south-1.compute.internal | grep -A 15 "Capacity:"
+kubectl describe node ip-10-0-4-59.ap-south-1.compute.internal | grep -A 15 "Capacity:"
