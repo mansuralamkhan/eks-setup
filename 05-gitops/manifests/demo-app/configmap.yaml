@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: week1-2-app-content
+data:
+  index.html: |
+    <html>
+      <body style="font-family: sans-serif; background:#0b1d33; color:#fff; text-align:center; padding-top:100px;">
+         <h1>Week 1-2 App — v2</h1>
+    <p>Updated via Git, synced by ArgoCD 🔄</p>
+      </body>
+    </html>
