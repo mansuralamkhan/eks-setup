@@ -5,7 +5,22 @@
 provider "aws" {
   region = var.region
 }
-
+terraform {
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
+    kubernetes = {
+      source  = "hashicorp/kubernetes"
+      version = "~> 2.30"
+    }
+  }
+}
 module "vpc" {
   source    = "./modules/vpc"
   vpc_cidr  = var.vpc_cidr
@@ -25,8 +40,8 @@ module "eks" {
   managed_node_min_size      = var.managed_node_min_size
   managed_node_max_size      = var.managed_node_max_size
   managed_node_desired_size  = var.managed_node_desired_size
-  self_managed_node_instance_type = var.self_managed_node_instance_type
-  self_managed_node_min_size      = var.self_managed_node_min_size
-  self_managed_node_max_size      = var.self_managed_node_max_size
+  # self_managed_node_instance_type = var.self_managed_node_instance_type
+  # self_managed_node_min_size      = var.self_managed_node_min_size
+  # self_managed_node_max_size      = var.self_managed_node_max_size
   tags                       = var.tags
 }
