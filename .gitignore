@@ -6,3 +6,7 @@
 *.tar
 *.tar.gz
 *.tfstate*
+
+
+.DS_Store
+.DS_Store
