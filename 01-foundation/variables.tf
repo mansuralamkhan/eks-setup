@@ -80,7 +80,7 @@ variable "self_managed_node_desired_size" {
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
-  default     = {
+  default = {
     Environment = "production"
     Terraform   = "true"
   }

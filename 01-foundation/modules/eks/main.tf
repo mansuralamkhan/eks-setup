@@ -104,6 +104,158 @@ resource "aws_iam_role" "managed_node_group" {
     ]
   })
 }
+# -------------------------------------------------------------------
+# Karpenter node IAM role
+#
+# This role is assumed by EC2 instances provisioned by Karpenter.
+# Karpenter itself does not use this role to call AWS APIs.
+# -------------------------------------------------------------------
+
+data "aws_iam_policy_document" "karpenter_node_assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+
+    actions = ["sts:AssumeRole"]
+  }
+}
+
+resource "aws_iam_role" "karpenter_node" {
+  name               = "${var.cluster_name}-karpenter-node"
+  assume_role_policy = data.aws_iam_policy_document.karpenter_node_assume_role.json
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "karpenter_node" {
+  for_each = {
+    AmazonEKSWorkerNodePolicy          = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+    AmazonEKS_CNI_Policy               = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+    AmazonEC2ContainerRegistryReadOnly = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+    AmazonSSMManagedInstanceCore       = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+  }
+
+  role       = aws_iam_role.karpenter_node.name
+  policy_arn = each.value
+}
+
+# -------------------------------------------------------------------
+# Karpenter controller IAM role
+#
+# This role is assumed by the Karpenter controller running in the
+# Kubernetes cluster. It is separate from the EC2 node role.
+# -------------------------------------------------------------------
+
+resource "aws_iam_role" "karpenter_controller" {
+  name = "${var.cluster_name}-karpenter"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "pods.eks.amazonaws.com"
+        }
+        Action = [
+          "sts:AssumeRole",
+          "sts:TagSession"
+        ]
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_policy" "karpenter_controller" {
+  name = "${var.cluster_name}-karpenter-controller"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "AllowScopedEC2InstanceActions"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:RunInstances",
+          "ec2:CreateFleet",
+          "ec2:CreateLaunchTemplate",
+          "ec2:CreateTags",
+          "ec2:TerminateInstances",
+          "ec2:DeleteLaunchTemplate"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowDescribeActions"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:DescribeImages",
+          "ec2:DescribeInstances",
+          "ec2:DescribeInstanceTypes",
+          "ec2:DescribeInstanceTypeOfferings",
+          "ec2:DescribeAvailabilityZones",
+          "ec2:DescribeLaunchTemplates",
+          "ec2:DescribeSpotPriceHistory",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeSecurityGroups",
+          "ec2:DescribeInstanceStatus",
+          "pricing:GetProducts",
+          "ssm:GetParameter",
+          "eks:DescribeCluster"
+        ]
+
+        Resource = "*"
+      },
+      {
+        Sid    = "AllowPassNodeRole"
+        Effect = "Allow"
+
+        Action = [
+          "iam:PassRole"
+        ]
+
+        Resource = aws_iam_role.karpenter_node.arn
+      }
+    ]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "karpenter_controller" {
+  role       = aws_iam_role.karpenter_controller.name
+  policy_arn = aws_iam_policy.karpenter_controller.arn
+}
+
+resource "aws_eks_addon" "pod_identity_agent" {
+  cluster_name = aws_eks_cluster.this.name
+  addon_name   = "eks-pod-identity-agent"
+
+  depends_on = [
+    aws_eks_cluster.this
+  ]
+}
+
+resource "aws_eks_pod_identity_association" "karpenter" {
+  cluster_name    = aws_eks_cluster.this.name
+  namespace       = "karpenter"
+  service_account = "karpenter"
+  role_arn        = aws_iam_role.karpenter_controller.arn
+
+  depends_on = [
+    aws_eks_addon.pod_identity_agent,
+    aws_iam_role_policy_attachment.karpenter_controller
+  ]
+}
 
 resource "aws_iam_role_policy_attachment" "managed_node_group_policy" {
   for_each = {
