@@ -52,6 +52,8 @@ variable "managed_node_desired_size" {
 #   default     = "t2.micro"
 # }
 
+
+
 # variable "self_managed_node_min_size" {
 #   description = "Minimum size of self-managed node group"
 #   type        = number

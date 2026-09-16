@@ -1,0 +1,22 @@
+# Helm values for kube-prometheus-stack, installed into the `monitoring` namespace
+# helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#   -n monitoring --create-namespace -f kube-prometheus-stack-values.yaml
+
+grafana:
+  enabled: true
+  defaultDashboardsEnabled: true
+  adminPassword: "<set-via-secret-not-committed>"
+
+prometheus:
+  prometheusSpec:
+    retention: 15d
+    serviceMonitorSelectorNilUsesHelmValues: false
+
+alertmanager:
+  enabled: true
+
+nodeExporter:
+  enabled: true
+
+kubeStateMetrics:
+  enabled: true
