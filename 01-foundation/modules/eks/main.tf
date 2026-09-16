@@ -168,7 +168,19 @@ resource "aws_eks_node_group" "managed" {
   depends_on = [aws_eks_cluster.this, aws_iam_role_policy_attachment.managed_node_group_policy]
 }
 
-
+# -------------------------------------------------------------------
+# Historical reference: self-managed worker nodes
+#
+# This implementation is intentionally retained as commented code
+# for learning/reference purposes.
+#
+# Active architecture:
+#   - EKS Managed Node Group: baseline capacity
+#   - Karpenter: dynamic node provisioning
+#
+# Do not uncomment this block without revisiting the node architecture,
+# IAM permissions, security groups, and autoscaling design.
+# -------------------------------------------------------------------
 # resource "aws_eks_access_entry" "self_managed_node" {
 #   cluster_name  = aws_eks_cluster.this.name
 #   principal_arn = aws_iam_role.self_managed_node_group.arn
