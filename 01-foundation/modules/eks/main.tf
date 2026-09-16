@@ -46,7 +46,7 @@ resource "aws_eks_cluster" "this" {
     subnet_ids         = concat(var.private_subnet_ids, var.public_subnet_ids)
     endpoint_public_access = true
     endpoint_private_access = true
-    public_access_cidrs = ["0.0.0.0/0"]
+    public_access_cidrs = ["223.185.135.110/32"]
   }
   access_config {
     authentication_mode                         = "API_AND_CONFIG_MAP"
