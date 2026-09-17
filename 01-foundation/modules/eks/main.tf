@@ -178,20 +178,74 @@ resource "aws_iam_policy" "karpenter_controller" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
+                {
+        Sid    = "AllowScopedEC2InstanceAccessActions"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:RunInstances",
+          "ec2:CreateFleet"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:ap-south-1::image/*",
+          "arn:aws:ec2:ap-south-1::snapshot/*",
+          "arn:aws:ec2:ap-south-1:*:security-group/*",
+          "arn:aws:ec2:ap-south-1:*:subnet/*",
+          "arn:aws:ec2:ap-south-1:*:capacity-reservation/*",
+          "arn:aws:ec2:ap-south-1:*:placement-group/*"
+        ]
+      },
       {
-        Sid    = "AllowScopedEC2InstanceActions"
+        Sid    = "AllowScopedEC2LaunchTemplateAccessActions"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:RunInstances",
+          "ec2:CreateFleet"
+        ]
+
+        Resource = "arn:aws:ec2:ap-south-1:*:launch-template/*"
+
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+          }
+
+          StringLike = {
+            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedEC2InstanceActionsWithTags"
         Effect = "Allow"
 
         Action = [
           "ec2:RunInstances",
           "ec2:CreateFleet",
-          "ec2:CreateLaunchTemplate",
-          "ec2:CreateTags",
-          "ec2:TerminateInstances",
-          "ec2:DeleteLaunchTemplate"
+          "ec2:CreateLaunchTemplate"
         ]
 
-        Resource = "*"
+        Resource = [
+          "arn:aws:ec2:ap-south-1:*:fleet/*",
+          "arn:aws:ec2:ap-south-1:*:instance/*",
+          "arn:aws:ec2:ap-south-1:*:volume/*",
+          "arn:aws:ec2:ap-south-1:*:network-interface/*",
+          "arn:aws:ec2:ap-south-1:*:launch-template/*",
+          "arn:aws:ec2:ap-south-1:*:spot-instances-request/*"
+        ]
+
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
+          }
+
+          StringLike = {
+            "aws:RequestTag/karpenter.sh/nodepool" = "*"
+          }
+        }
       },
       {
         Sid    = "AllowDescribeActions"
@@ -216,6 +270,96 @@ resource "aws_iam_policy" "karpenter_controller" {
         Resource = "*"
       },
       {
+        Sid    = "AllowScopedInstanceProfileCreationActions"
+        Effect = "Allow"
+
+        Action = [
+          "iam:CreateInstanceProfile"
+        ]
+
+        Resource = "arn:aws:iam::*:instance-profile/*"
+
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
+            "aws:RequestTag/topology.kubernetes.io/region"              = "ap-south-1"
+          }
+
+          StringLike = {
+            "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass" = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedInstanceProfileTagActions"
+        Effect = "Allow"
+
+        Action = [
+          "iam:TagInstanceProfile"
+        ]
+
+        Resource = "arn:aws:iam::*:instance-profile/*"
+
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:ResourceTag/topology.kubernetes.io/region"              = "ap-south-1"
+            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
+            "aws:RequestTag/topology.kubernetes.io/region"              = "ap-south-1"
+          }
+
+          StringLike = {
+            "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass" = "*"
+            "aws:RequestTag/karpenter.k8s.aws/ec2nodeclass"  = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedInstanceProfileActions"
+        Effect = "Allow"
+
+        Action = [
+          "iam:AddRoleToInstanceProfile",
+          "iam:RemoveRoleFromInstanceProfile",
+          "iam:DeleteInstanceProfile"
+        ]
+
+        Resource = "arn:aws:iam::*:instance-profile/*"
+
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:ResourceTag/topology.kubernetes.io/region"              = "ap-south-1"
+          }
+
+          StringLike = {
+            "aws:ResourceTag/karpenter.k8s.aws/ec2nodeclass" = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowInstanceProfileReadActions"
+        Effect = "Allow"
+
+        Action = [
+          "iam:GetInstanceProfile"
+        ]
+
+        Resource = "arn:aws:iam::*:instance-profile/*"
+      },
+      {
+        Sid    = "AllowInstanceProfileListAction"
+        Effect = "Allow"
+
+        Action = [
+          "iam:ListInstanceProfiles"
+        ]
+
+        Resource = "*"
+      },
+      {
         Sid    = "AllowPassNodeRole"
         Effect = "Allow"
 
@@ -224,6 +368,15 @@ resource "aws_iam_policy" "karpenter_controller" {
         ]
 
         Resource = aws_iam_role.karpenter_node.arn
+
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = [
+              "ec2.amazonaws.com",
+              "ec2.amazonaws.com.cn"
+            ]
+          }
+        }
       }
     ]
   })
