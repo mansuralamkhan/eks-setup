@@ -1,5 +1,7 @@
 ADR-003: GitOps Deployment Pattern — Argo CD App-of-Apps
 
+**Status:** Accepted · Implemented (`05-gitops`). Only some platform components are child apps so far.
+
 Context: As the number of services on the platform grows, managing each as an individually registered Argo CD Application doesn't scale operationally — every new service requires manual onboarding, and there's no single place to see or reason about the platform's full application inventory. The platform needs a pattern that lets new services be added declaratively and gives one entry point for platform-wide state.
 
 Decision: Adopt the app-of-apps pattern: a root Argo CD Application manages a set of child Application manifests stored in Git, so onboarding a new service means adding one manifest to a directory rather than manually registering it in Argo CD.

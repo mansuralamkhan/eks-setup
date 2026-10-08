@@ -1,5 +1,7 @@
 # ADR-010: EKS Node Access via AWS Systems Manager
 
+**Status:** Accepted · Implemented (`AmazonSSMManagedInstanceCore` on the node roles in `01-foundation`).
+
 ## Context
 
 EKS worker nodes require an operational access mechanism for troubleshooting

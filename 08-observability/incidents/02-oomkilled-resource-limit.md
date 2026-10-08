@@ -9,18 +9,12 @@ Showed `Last State: Terminated`, `Reason: OOMKilled` — the container's memory 
 
 The dashboard's restart-count panel is what surfaced this — unlike Incident 01, this failure mode *is* visible as a restart, so the panel did its job of flagging that something was wrong. `kubectl describe` was then needed to get from "it's restarting" to the actual reason.
 
-Memory limit at the time: `<fill in your actual value, e.g. 64Mi>`. Observed usage via `kubectl top pod` / the dashboard's memory panel: `<fill in>`.
+> **TODO (evidence not recorded):** the memory limit and observed usage at the time of this incident were not captured.
+> Reproduce once on the next cluster session and record both numbers here:
+> `kubectl get deploy demo-app -o jsonpath='{.spec.template.spec.containers[0].resources}'` and `kubectl top pod -l app=demo-app`.
 
 ## Fix
-Increased the memory limit/request in the deployment spec to a realistic value based on observed usage:
-```yaml
-resources:
-  requests:
-    memory: "<your new value>"
-  limits:
-    memory: "<your new value>"
-```
-Applied and confirmed the pod stayed stable with no further restarts.
+Raised the memory limit based on observed usage (exact before/after values: see the TODO above), applied the change, and confirmed the pod stayed stable with no further restarts.
 
 ## Contrast with Incident 01
 Both failures were on the same demo-app, but the dashboard behaved differently for each: OOMKilled showed up correctly as a restart-count spike, while the bad-image-tag failure in Incident 01 never registered on that same panel at all, since a container that never started isn't a "restart." Together, these two incidents mapped out a real blind spot in restart-count-only monitoring — it catches crash loops but misses pull failures entirely.

@@ -1,5 +1,7 @@
 ADR-008: Container Supply Chain Security — Cosign + SLSA
 
+**Status:** Proposed · No code yet.
+
 Context: Container images built in CI were previously deployed without any verification that they came from the expected build pipeline, meaning a compromised registry or a manually pushed image could reach production undetected.
 
 Decision: Sign all container images in CI using Cosign, following SLSA provenance conventions, and enforce signature verification at admission time via Kyverno policy so unsigned images are rejected before scheduling.

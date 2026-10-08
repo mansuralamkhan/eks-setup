@@ -1,5 +1,7 @@
 **ADR-001: Node Autoscaling — Karpenter vs Cluster Autoscaler**
 
+**Status:** Accepted · Implemented (`01-foundation` IAM, `02-autoscaling`, `05-gitops/apps/karpenter.yaml`)
+
 **Context:** The platform runs workloads with changing traffic on EKS. Previously, Cluster Autoscaler could scale only within the fixed instance types configured in each ASG. This made scaling slower and sometimes resulted in poor use of node capacity during traffic spikes. The platform needs an autoscaler that can choose from different instance types and sizes based on demand and remove underused nodes to reduce compute costs.
 
 **Decision:** Use Karpenter with custom NodePool and EC2NodeClass definitions.Karpenter will provision and consolidate nodes based on unschedulable pod requirements and NodePool scheduling constraints, instead of relying on pre-configured Auto Scaling Groups.

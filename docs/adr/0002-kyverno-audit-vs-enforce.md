@@ -1,5 +1,7 @@
 **ADR-002: Policy Enforcement Mode — Kyverno Audit vs Enforce**
 
+**Status:** Accepted · Implemented in Audit mode (`07-policy`). Enforce cutover not done yet.
+
 **Context:** New admission policies, such as blocking `:latest` image tags, could break existing deployments if enabled immediately. Some older manifests and CI pipelines may not follow the new rules. The platform needs a safe rollout process that shows violations without causing outages, while still moving to full enforcement within a defined timeframe.
 
 **Decision:** Roll out every new policy in `Audit` mode first. Generate PolicyReports for two weeks, fix the reported issues with the responsible teams, and then switch the policy to `Enforce` mode on a planned cutover date communicated in advance.

@@ -1,5 +1,7 @@
 **ADR-005: Reliability Targets — SLOs and Error Budgets**
 
+**Status:** Proposed · No code yet.
+
 **Context:** The platform has dashboards for pod health, node resource usage, and ALB errors, but there are no clear limits for what is considered "acceptable." This makes it difficult to decide when a change is too risky or when on-call should be alerted. The platform needs clear and measurable reliability targets based on user impact, not just infrastructure metrics.
 
 **Decision:** Define SLOs for each critical service, starting with the demo-app's availability and latency. SLOs will be measured as a percentage over a rolling 30-day period. Each SLO will have an error budget that controls how quickly changes can be released. If the error budget is being used too quickly, risky changes will be paused.

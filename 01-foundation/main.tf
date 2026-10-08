@@ -1,7 +1,3 @@
-# Root Module Files
-
-## main.tf
-
 provider "aws" {
   region = var.region
 }
@@ -40,8 +36,5 @@ module "eks" {
   managed_node_min_size       = var.managed_node_min_size
   managed_node_max_size       = var.managed_node_max_size
   managed_node_desired_size   = var.managed_node_desired_size
-  # self_managed_node_instance_type = var.self_managed_node_instance_type
-  # self_managed_node_min_size      = var.self_managed_node_min_size
-  # self_managed_node_max_size      = var.self_managed_node_max_size
   tags = var.tags
 }
