@@ -1,6 +1,6 @@
 ADR-007: Observability Stack — Prometheus/Grafana + CloudWatch Container Insights
 
-**Status:** Accepted · Implemented (`08-observability/install`). Grafana dashboard JSON is not committed yet.
+**Status:** Accepted · Implemented (`08-observability/install`, dashboard ConfigMap, workload alerts).
 
 Context: The platform needs visibility into pod health, node resource usage, and ALB-level errors, but no single tool covers both deep Kubernetes-native metrics and AWS-managed infrastructure metrics (like ALB 5xx counts) equally well. Running two disconnected tools risks fragmented dashboards and slower incident diagnosis.
 

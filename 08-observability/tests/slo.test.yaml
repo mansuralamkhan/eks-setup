@@ -1,0 +1,52 @@
+rule_files:
+- rules/prometheusrule-slo.rules.yml
+evaluation_interval: 1m
+tests:
+- name: 'fast burn: 15 minute total outage after healthy hour pages'
+  interval: 1m
+  input_series:
+  - series: probe_success{service="demo-app"}
+    values: 1x119 0x14
+  alert_rule_test:
+  - eval_time: 133m
+    alertname: DemoAppErrorBudgetFastBurn
+    exp_alerts:
+    - exp_labels:
+        severity: page
+        service: demo-app
+      exp_annotations:
+        summary: demo-app is burning its 30-day error budget 14x too fast
+        description: 23.33% of probes failed over the last hour (the 30-day SLO allows 0.5%). Check the demo-app pods and the Probe target first.
+  - eval_time: 100m
+    alertname: DemoAppErrorBudgetFastBurn
+    exp_alerts: []
+- name: 'healthy for six hours: nothing fires'
+  interval: 1m
+  input_series:
+  - series: probe_success{service="demo-app"}
+    values: 1x399
+  alert_rule_test:
+  - eval_time: 390m
+    alertname: DemoAppErrorBudgetFastBurn
+    exp_alerts: []
+  - eval_time: 390m
+    alertname: DemoAppErrorBudgetSlowBurn
+    exp_alerts: []
+- name: 'steady 4% failures: slow burn tickets, fast burn stays quiet'
+  interval: 1m
+  input_series:
+  - series: probe_success{service="demo-app"}
+    values: 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0
+  alert_rule_test:
+  - eval_time: 420m
+    alertname: DemoAppErrorBudgetSlowBurn
+    exp_alerts:
+    - exp_labels:
+        severity: ticket
+        service: demo-app
+      exp_annotations:
+        summary: demo-app is steadily consuming its error budget
+        description: Sustained partial failures over the last six hours; the 30-day budget will run out early at this rate.
+  - eval_time: 420m
+    alertname: DemoAppErrorBudgetFastBurn
+    exp_alerts: []

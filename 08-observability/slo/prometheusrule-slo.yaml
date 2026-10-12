@@ -1,0 +1,57 @@
+# ADR-005: availability SLO for demo-app.
+#   SLI : synthetic probe success (blackbox exporter), probe_success{service="demo-app"}
+#   SLO : 99.5% over 30 days  ->  error budget = 0.5%
+# Burn-rate alerts follow the multiwindow pattern from the Google SRE Workbook:
+#   fast: 14.4x budget burn over 1h and 5m  (2% of the 30-day budget gone in an hour) -> page
+#   slow:  6x   budget burn over 6h and 30m (5% of the budget in six hours)           -> ticket
+# 14.4 x 0.005 = 0.072 and 6 x 0.005 = 0.03 are the error-rate thresholds below.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: demo-app-slo
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: slo
+spec:
+  groups:
+    - name: demo-app-slo-recording
+      interval: 30s
+      rules:
+        - record: slo:demo_app_availability:ratio_5m
+          expr: avg_over_time(probe_success{service="demo-app"}[5m])
+        - record: slo:demo_app_availability:ratio_30m
+          expr: avg_over_time(probe_success{service="demo-app"}[30m])
+        - record: slo:demo_app_availability:ratio_1h
+          expr: avg_over_time(probe_success{service="demo-app"}[1h])
+        - record: slo:demo_app_availability:ratio_6h
+          expr: avg_over_time(probe_success{service="demo-app"}[6h])
+        - record: slo:demo_app_availability:ratio_30d
+          expr: avg_over_time(probe_success{service="demo-app"}[30d])
+        - record: slo:demo_app_error_budget:remaining_ratio
+          expr: 1 - ((1 - slo:demo_app_availability:ratio_30d) / (1 - 0.995))
+    - name: demo-app-slo-alerts
+      rules:
+        - alert: DemoAppErrorBudgetFastBurn
+          expr: |
+            (1 - slo:demo_app_availability:ratio_1h) > (14.4 * 0.005)
+            and
+            (1 - slo:demo_app_availability:ratio_5m) > (14.4 * 0.005)
+          for: 2m
+          labels:
+            severity: page
+            service: demo-app
+          annotations:
+            summary: demo-app is burning its 30-day error budget 14x too fast
+            description: "{{ $value | humanizePercentage }} of probes failed over the last hour (the 30-day SLO allows 0.5%). Check the demo-app pods and the Probe target first."
+        - alert: DemoAppErrorBudgetSlowBurn
+          expr: |
+            (1 - slo:demo_app_availability:ratio_6h) > (6 * 0.005)
+            and
+            (1 - slo:demo_app_availability:ratio_30m) > (6 * 0.005)
+          for: 15m
+          labels:
+            severity: ticket
+            service: demo-app
+          annotations:
+            summary: demo-app is steadily consuming its error budget
+            description: Sustained partial failures over the last six hours; the 30-day budget will run out early at this rate.

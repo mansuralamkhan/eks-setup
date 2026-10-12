@@ -1,6 +1,6 @@
 ADR-009: Disaster Recovery — Multi-AZ EKS with Velero Backups
 
-**Status:** Accepted · Partially implemented. Multi-AZ subnets and node placement exist in `01-foundation` (single NAT gateway, one-node baseline). Velero backups and restore drills are Proposed.
+**Status:** Accepted · Partially implemented. Multi-AZ subnets and node placement exist in `01-foundation` (single NAT gateway, one-node baseline). Velero resource backups are defined (`01-foundation/velero.tf`, `05-gitops/apps/velero.yaml`); the first restore drill has not been run.
 
 Context: The platform's initial single-AZ design left it exposed to a full outage from a single AZ failure, and there was no tested mechanism to recover cluster state (workloads, PVs, config) if the cluster itself were lost or corrupted.
 
@@ -29,3 +29,7 @@ AZ-independent.
 A production deployment with a requirement for AZ-independent egress should
 use one NAT Gateway per AZ or another highly available egress architecture.
 \
+
+### Scope today
+
+Velero backs up Kubernetes **resources** (manifests, CRDs, config) on a daily schedule with a 72-hour TTL. Persistent volume snapshots are disabled because the cluster has no stateful workloads yet. The restore procedure and a table for drill timings are in `docs/runbooks/restore-drill.md`.

@@ -1,6 +1,6 @@
 **ADR-004: Secrets Management — External Secrets Operator**
 
-**Status:** Accepted · Implemented (`06-secrets`). The ESO install and its IAM role are not yet in Terraform or GitOps.
+**Status:** Accepted · Implemented (`06-secrets`). The ESO install and its IAM role are still manual (not in Terraform or GitOps).
 
 **Context:** Application manifests previously contained hardcoded or manually added credentials. This could cause differences between what is stored in Git and what is running in the cluster, and made secret rotation manual and error-prone. The platform needs secrets to come from a managed store and be synced automatically, while keeping sensitive values out of Git.
 

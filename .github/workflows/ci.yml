@@ -36,7 +36,9 @@ jobs:
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             -ignore-filename-pattern '.*\.json$' \
-            02-autoscaling 04-service-mesh 05-gitops 06-secrets 07-policy 08-observability/demo-app
+            -ignore-filename-pattern '.*/values/.*' \
+            02-autoscaling 04-service-mesh 05-gitops 06-secrets 07-policy \
+            08-observability/demo-app 08-observability/slo 08-observability/alerts 08-observability/dashboards
 
   kyverno:
     runs-on: ubuntu-latest
@@ -48,6 +50,29 @@ jobs:
           sudo mv kyverno /usr/local/bin/
       - name: policy tests
         run: ./07-policy/run-tests.sh
+
+  prometheus:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install promtool
+        run: |
+          curl -sSL https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz \
+            | tar xz --strip-components=1 prometheus-3.5.0.linux-amd64/promtool
+          sudo mv promtool /usr/local/bin/
+      - run: pip install pyyaml
+      - name: lint and unit-test alert rules, check dashboard queries
+        run: ./scripts/test-prometheus-rules.sh
+
+  placeholders:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: no unresolved placeholders in GitOps config
+        run: |
+          if grep -rnE 'PIN_LATEST|REPLACE_VELERO_BUCKET' 05-gitops; then
+            echo "Run 'make pin' and 'make velero-bucket', then commit the result."; exit 1
+          fi
 
   secrets:
     runs-on: ubuntu-latest

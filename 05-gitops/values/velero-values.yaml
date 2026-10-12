@@ -1,0 +1,44 @@
+# ADR-009. Scope today: Kubernetes RESOURCE backups (manifests, CRDs, config).
+# Persistent volume snapshots are off: this cluster has no stateful workloads that
+# need them. Turn them on (snapshotsEnabled, volumeSnapshotLocation, EBS CSI) before
+# relying on Velero for data.
+initContainers:
+  - name: velero-plugin-for-aws
+    # Check the plugin/Velero compatibility table in the plugin's README when you bump the chart.
+    image: velero/velero-plugin-for-aws:v1.12.0
+    volumeMounts:
+      - mountPath: /target
+        name: plugins
+
+# Credentials come from EKS Pod Identity (aws_eks_pod_identity_association in
+# 01-foundation/velero.tf), not from a Secret.
+credentials:
+  useSecret: false
+
+serviceAccount:
+  server:
+    create: true
+    name: velero   # must match the Pod Identity association
+
+configuration:
+  backupStorageLocation:
+    - name: default
+      provider: aws
+      bucket: REPLACE_VELERO_BUCKET   # filled in by scripts/set-velero-bucket.sh
+      config:
+        region: ap-south-1
+  volumeSnapshotLocation: []
+
+snapshotsEnabled: false
+deployNodeAgent: false
+
+schedules:
+  daily-resources:
+    schedule: "0 2 * * *"   # 02:00 UTC
+    template:
+      ttl: 72h0m0s
+      snapshotVolumes: false
+      excludedNamespaces:
+        - kube-system
+        - kube-public
+        - kube-node-lease

@@ -1,0 +1,36 @@
+# ADR-008: images from this repo's GHCR namespace must be signed by this repo's
+# image workflow. Audit first (same rollout as ADR-002): violations show up in
+# PolicyReports and nothing is blocked until you switch to Enforce.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-image-signatures
+  annotations:
+    policies.kyverno.io/title: Verify image signatures (Cosign keyless)
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+spec:
+  validationFailureAction: Audit
+  background: false
+  webhookTimeoutSeconds: 30
+  failurePolicy: Ignore   # a Sigstore outage must not block scheduling in Audit mode
+  rules:
+    - name: verify-cosign-keyless
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/mansuralamkhan/eks-setup/*"
+          required: true
+          verifyDigest: true
+          mutateDigest: false   # turn on together with Enforce
+          attestors:
+            - entries:
+                - keyless:
+                    issuer: "https://token.actions.githubusercontent.com"
+                    subject: "https://github.com/mansuralamkhan/eks-setup/.github/workflows/image.yml@refs/heads/main"
+                    rekor:
+                      url: https://rekor.sigstore.dev

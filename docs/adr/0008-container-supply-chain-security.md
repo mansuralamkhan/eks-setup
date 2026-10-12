@@ -1,6 +1,6 @@
 ADR-008: Container Supply Chain Security — Cosign + SLSA
 
-**Status:** Proposed · No code yet.
+**Status:** Accepted · Implemented in Audit mode (`.github/workflows/image.yml`, `07-policy/policies/verify-image-signatures.yaml`). First signed-image run, live verification and the Enforce cutover are pending.
 
 Context: Container images built in CI were previously deployed without any verification that they came from the expected build pipeline, meaning a compromised registry or a manually pushed image could reach production undetected.
 

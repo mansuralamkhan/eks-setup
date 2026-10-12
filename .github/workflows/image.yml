@@ -1,0 +1,63 @@
+name: image
+
+# Builds the demo image, pushes it to GHCR, then signs it with Cosign (keyless,
+# GitHub OIDC) and attaches SLSA build provenance. Kyverno verifies this identity
+# (07-policy/policies/verify-image-signatures.yaml). See ADR-008.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - ".github/workflows/image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write       # push to GHCR
+  id-token: write       # keyless signing (OIDC)
+  attestations: write   # build provenance
+
+jobs:
+  build-sign:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: image name (GHCR requires lowercase)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/demo-app" >> "$GITHUB_ENV"
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: app/demo-app
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          provenance: mode=max
+          sbom: true
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: sign by digest (keyless)
+        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
+
+      - name: SLSA build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: summary
+        run: |
+          echo "Signed image: ${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"

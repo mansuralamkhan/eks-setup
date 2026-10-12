@@ -1,0 +1,370 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-overview-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: '1'
+data:
+  platform-overview.json: |-
+    {
+      "uid": "platform-overview",
+      "title": "Platform overview",
+      "tags": [
+        "eks-setup"
+      ],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": {
+        "from": "now-6h",
+        "to": "now"
+      },
+      "panels": [
+        {
+          "id": 1,
+          "title": "Container restarts (15m)",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[15m]))",
+              "legendFormat": "{{namespace}}/{{pod}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "description": "Catches crash loops and OOMKills (Incident 02). Cannot see containers that never start."
+        },
+        {
+          "id": 2,
+          "title": "Containers stuck waiting, by reason",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (reason) (kube_pod_container_status_waiting_reason == 1)",
+              "legendFormat": "{{reason}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "description": "Closes the Incident 01 gap: ImagePullBackOff / ErrImagePull never register as restarts."
+        },
+        {
+          "id": 3,
+          "title": "demo-app memory working set vs limit",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum by (pod) (container_memory_working_set_bytes{pod=~\"demo-app.*\", container!=\"\"})",
+              "legendFormat": "{{pod}} usage",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "max by (pod) (kube_pod_container_resource_limits{pod=~\"demo-app.*\", resource=\"memory\"})",
+              "legendFormat": "{{pod}} limit",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "bytes"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 4,
+          "title": "demo-app availability (30d)",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "slo:demo_app_availability:ratio_30d",
+              "legendFormat": "availability",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "green",
+                    "value": 0.995
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 5,
+          "title": "Error budget remaining",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 18,
+            "y": 8,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "slo:demo_app_error_budget:remaining_ratio",
+              "legendFormat": "budget",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "red",
+                    "value": null
+                  },
+                  {
+                    "color": "orange",
+                    "value": 0.25
+                  },
+                  {
+                    "color": "green",
+                    "value": 0.5
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 6,
+          "title": "Burn rate (1h and 6h)",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 12,
+            "w": 12,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "(1 - slo:demo_app_availability:ratio_1h) / (1 - 0.995)",
+              "legendFormat": "1h burn rate",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            },
+            {
+              "refId": "B",
+              "expr": "(1 - slo:demo_app_availability:ratio_6h) / (1 - 0.995)",
+              "legendFormat": "6h burn rate",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "description": "1.0 = spending the budget exactly as fast as the SLO allows. Pages at 14.4 (1h), ticket at 6 (6h)."
+        },
+        {
+          "id": 7,
+          "title": "Probe latency",
+          "type": "timeseries",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "probe_duration_seconds{service=\"demo-app\"}",
+              "legendFormat": "{{instance}}",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          }
+        },
+        {
+          "id": 8,
+          "title": "Nodes",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 12,
+            "y": 16,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "count(kube_node_info)",
+              "legendFormat": "nodes",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "description": "Managed baseline plus whatever Karpenter has added."
+        },
+        {
+          "id": 9,
+          "title": "Pods not Running",
+          "type": "stat",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "gridPos": {
+            "x": 18,
+            "y": 16,
+            "w": 6,
+            "h": 4
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "sum(kube_pod_status_phase{phase=~\"Pending|Failed|Unknown\"})",
+              "legendFormat": "pods",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "prometheus"
+              }
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  },
+                  {
+                    "color": "red",
+                    "value": 1
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          }
+        }
+      ]
+    }

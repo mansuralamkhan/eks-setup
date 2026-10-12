@@ -1,6 +1,6 @@
 ADR-003: GitOps Deployment Pattern — Argo CD App-of-Apps
 
-**Status:** Accepted · Implemented (`05-gitops`). Only some platform components are child apps so far.
+**Status:** Accepted · Implemented (`05-gitops`). Child apps: ALB controller, Karpenter, kube-prometheus-stack, blackbox exporter, Kyverno and its policies, observability config, Velero. External Secrets is still installed by hand.
 
 Context: As the number of services on the platform grows, managing each as an individually registered Argo CD Application doesn't scale operationally — every new service requires manual onboarding, and there's no single place to see or reason about the platform's full application inventory. The platform needs a pattern that lets new services be added declaratively and gives one entry point for platform-wide state.
 

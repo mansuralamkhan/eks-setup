@@ -1,0 +1,55 @@
+rule_files:
+- rules/prometheusrule-workload.rules.yml
+evaluation_interval: 1m
+tests:
+- name: image pull failure alerts after 3 minutes (Incident 01)
+  interval: 1m
+  input_series:
+  - series: kube_pod_container_status_waiting_reason{namespace="default",pod="demo-app-x",container="demo-app",reason="ImagePullBackOff"}
+    values: 1x9
+  - series: kube_pod_container_status_restarts_total{namespace="default",pod="demo-app-x",container="demo-app"}
+    values: '0x9'
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: PodImagePullFailure
+    exp_alerts: []
+  - eval_time: 5m
+    alertname: PodImagePullFailure
+    exp_alerts:
+    - exp_labels:
+        severity: ticket
+        namespace: default
+        pod: demo-app-x
+        container: demo-app
+        reason: ImagePullBackOff
+      exp_annotations:
+        summary: default/demo-app-x cannot pull its image (ImagePullBackOff)
+        description: Check the image tag and registry access. This never shows up as a restart (Incident 01).
+- name: restart-count alone does not see the pull failure, waiting reason does
+  interval: 1m
+  input_series:
+  - series: kube_pod_container_status_restarts_total{namespace="default",pod="demo-app-x",container="demo-app"}
+    values: '0x19'
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: PodCrashLooping
+    exp_alerts: []
+- name: OOMKilled with a fresh restart alerts (Incident 02)
+  interval: 1m
+  input_series:
+  - series: kube_pod_container_status_last_terminated_reason{namespace="default",pod="demo-app-y",container="demo-app",reason="OOMKilled"}
+    values: 1x11
+  - series: kube_pod_container_status_restarts_total{namespace="default",pod="demo-app-y",container="demo-app"}
+    values: 0 0 0 0 0 1 1 1 1 1 1 1
+  alert_rule_test:
+  - eval_time: 8m
+    alertname: PodOOMKilled
+    exp_alerts:
+    - exp_labels:
+        severity: ticket
+        namespace: default
+        pod: demo-app-y
+        container: demo-app
+      exp_annotations:
+        summary: default/demo-app-y was OOMKilled
+        description: Compare the memory working set with the container limit (Incident 02).

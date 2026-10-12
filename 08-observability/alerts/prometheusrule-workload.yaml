@@ -1,0 +1,44 @@
+# Closes the gap found in Incident 01: a restart-count panel cannot see ImagePullBackOff,
+# because the container never starts. These alerts watch the waiting reason directly,
+# and Incident 02's OOMKilled case.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: workload-health
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: workload-alerts
+spec:
+  groups:
+    - name: workload-health
+      rules:
+        - alert: PodImagePullFailure
+          expr: |
+            max by (namespace, pod, container, reason) (
+              kube_pod_container_status_waiting_reason{reason=~"ErrImagePull|ImagePullBackOff|InvalidImageName"}
+            ) == 1
+          for: 3m
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} cannot pull its image ({{ $labels.reason }})"
+            description: Check the image tag and registry access. This never shows up as a restart (Incident 01).
+        - alert: PodOOMKilled
+          expr: |
+            max by (namespace, pod, container) (
+              kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}
+            ) == 1
+            and on (namespace, pod, container)
+            increase(kube_pod_container_status_restarts_total[10m]) > 0
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled"
+            description: Compare the memory working set with the container limit (Incident 02).
+        - alert: PodCrashLooping
+          expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
+          for: 5m
+          labels:
+            severity: ticket
+          annotations:
+            summary: "{{ $labels.namespace }}/{{ $labels.pod }} is restarting repeatedly"

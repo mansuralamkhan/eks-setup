@@ -1,6 +1,6 @@
 **ADR-005: Reliability Targets — SLOs and Error Budgets**
 
-**Status:** Proposed · No code yet.
+**Status:** Accepted · Implemented (`08-observability/slo`, unit-tested with promtool). A live fire drill has not been recorded yet.
 
 **Context:** The platform has dashboards for pod health, node resource usage, and ALB errors, but there are no clear limits for what is considered "acceptable." This makes it difficult to decide when a change is too risky or when on-call should be alerted. The platform needs clear and measurable reliability targets based on user impact, not just infrastructure metrics.
 
