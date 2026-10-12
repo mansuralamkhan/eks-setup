@@ -17,6 +17,6 @@ variable "tags" {
 
 variable "cluster_name" {
   description = "cluster_name"
-  type = string
-  
+  type        = string
+
 }

@@ -60,3 +60,8 @@ variable "tags" {
     Terraform   = "true"
   }
 }
+
+variable "public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public EKS API endpoint (your IP as x.x.x.x/32)"
+  type        = list(string)
+}

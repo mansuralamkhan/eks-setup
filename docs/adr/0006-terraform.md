@@ -1,6 +1,6 @@
 ADR-006: Infrastructure as Code Tool — Terraform
 
-**Status:** Accepted · Partially implemented (modules and provider lock file). Remote state and PR-gated plans are not in place yet.
+**Status:** Accepted · Partially implemented (modules, provider lock file, CI `fmt`/`validate`). Remote state and PR-gated `plan` output are not in place yet.
 
 Context: The platform's foundational infrastructure (VPC, EKS cluster, node groups, IRSA roles) needs to be provisioned reproducibly across environments, with changes reviewable before they hit real infrastructure, and without manual console drift accumulating over time.
 

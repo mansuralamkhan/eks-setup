@@ -7,9 +7,20 @@ spec:
   project: default
 
   source:
-    repoURL: public.ecr.aws/karpenter/karpenter
+    # OCI Helm chart: Argo CD expects the registry path WITHOUT the chart name here.
+    # The OCI repository is registered in repo-karpenter-oci.yaml.
+    repoURL: public.ecr.aws/karpenter
     chart: karpenter
     targetRevision: 1.14.1
+    helm:
+      values: |
+        settings:
+          clusterName: my-eks-cluster
+        # Lab sizing: the baseline is a single managed node, and the chart's
+        # default of 2 replicas uses anti-affinity that would leave one Pending.
+        replicas: 1
+        serviceAccount:
+          name: karpenter   # must match aws_eks_pod_identity_association in 01-foundation
 
   destination:
     server: https://kubernetes.default.svc
@@ -19,3 +30,5 @@ spec:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

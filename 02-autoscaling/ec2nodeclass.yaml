@@ -11,5 +11,19 @@ spec:
   securityGroupSelectorTerms:
     - tags:
         karpenter.sh/discovery: "my-eks-cluster"
+  # Tracks the latest AL2023 AMI. Fine for a lab; pin a specific alias
+  # (al2023@v<date>) for anything that needs reproducible nodes.
   amiSelectorTerms:
     - alias: al2023@latest
+  # IMDSv2 only. Hop limit 2 keeps pods that read region/VPC from IMDS working.
+  metadataOptions:
+    httpEndpoint: enabled
+    httpTokens: required
+    httpPutResponseHopLimit: 2
+  blockDeviceMappings:
+    - deviceName: /dev/xvda
+      ebs:
+        volumeSize: 20Gi
+        volumeType: gp3
+        encrypted: true
+        deleteOnTermination: true

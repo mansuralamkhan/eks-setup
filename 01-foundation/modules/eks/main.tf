@@ -28,16 +28,18 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
   role       = aws_iam_role.eks_cluster.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
+data "aws_region" "current" {}
+
 resource "aws_eks_cluster" "this" {
   name     = var.cluster_name
   version  = var.cluster_version
   role_arn = aws_iam_role.eks_cluster.arn
 
   vpc_config {
-    subnet_ids         = concat(var.private_subnet_ids, var.public_subnet_ids)
-    endpoint_public_access = true
+    subnet_ids              = concat(var.private_subnet_ids, var.public_subnet_ids)
+    endpoint_public_access  = true
     endpoint_private_access = true
-    public_access_cidrs = ["223.185.135.110/32"]
+    public_access_cidrs     = var.public_access_cidrs
   }
   access_config {
     authentication_mode                         = "API_AND_CONFIG_MAP"
@@ -51,13 +53,21 @@ resource "aws_eks_cluster" "this" {
     }
   }
 
-  
+
 
   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
 
   tags = var.tags
 
   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
+}
+
+# Karpenter discovers the security group for new nodes by this tag
+# (see 02-autoscaling/ec2nodeclass.yaml). Subnets are tagged in modules/vpc.
+resource "aws_ec2_tag" "cluster_sg_karpenter_discovery" {
+  resource_id = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
+  key         = "karpenter.sh/discovery"
+  value       = var.cluster_name
 }
 
 resource "aws_eks_addon" "vpc_cni" {
@@ -169,7 +179,7 @@ resource "aws_iam_policy" "karpenter_controller" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-                {
+      {
         Sid    = "AllowScopedEC2InstanceAccessActions"
         Effect = "Allow"
 
@@ -179,12 +189,12 @@ resource "aws_iam_policy" "karpenter_controller" {
         ]
 
         Resource = [
-          "arn:aws:ec2:ap-south-1::image/*",
-          "arn:aws:ec2:ap-south-1::snapshot/*",
-          "arn:aws:ec2:ap-south-1:*:security-group/*",
-          "arn:aws:ec2:ap-south-1:*:subnet/*",
-          "arn:aws:ec2:ap-south-1:*:capacity-reservation/*",
-          "arn:aws:ec2:ap-south-1:*:placement-group/*"
+          "arn:aws:ec2:${data.aws_region.current.name}::image/*",
+          "arn:aws:ec2:${data.aws_region.current.name}::snapshot/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:security-group/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:subnet/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:capacity-reservation/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:placement-group/*"
         ]
       },
       {
@@ -196,7 +206,7 @@ resource "aws_iam_policy" "karpenter_controller" {
           "ec2:CreateFleet"
         ]
 
-        Resource = "arn:aws:ec2:ap-south-1:*:launch-template/*"
+        Resource = "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*"
 
         Condition = {
           StringEquals = {
@@ -219,22 +229,100 @@ resource "aws_iam_policy" "karpenter_controller" {
         ]
 
         Resource = [
-          "arn:aws:ec2:ap-south-1:*:fleet/*",
-          "arn:aws:ec2:ap-south-1:*:instance/*",
-          "arn:aws:ec2:ap-south-1:*:volume/*",
-          "arn:aws:ec2:ap-south-1:*:network-interface/*",
-          "arn:aws:ec2:ap-south-1:*:launch-template/*",
-          "arn:aws:ec2:ap-south-1:*:spot-instances-request/*"
+          "arn:aws:ec2:${data.aws_region.current.name}:*:fleet/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:volume/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:network-interface/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:spot-instances-request/*"
         ]
 
         Condition = {
           StringEquals = {
             "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
-            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
+            "aws:RequestTag/eks:eks-cluster-name"                      = var.cluster_name
           }
 
           StringLike = {
             "aws:RequestTag/karpenter.sh/nodepool" = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedResourceCreationTagging"
+        Effect = "Allow"
+
+        Action = "ec2:CreateTags"
+
+        Resource = [
+          "arn:aws:ec2:${data.aws_region.current.name}:*:fleet/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:volume/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:network-interface/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:spot-instances-request/*"
+        ]
+
+        Condition = {
+          StringEquals = {
+            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:RequestTag/eks:eks-cluster-name"                      = var.cluster_name
+            "ec2:CreateAction"                                         = ["RunInstances", "CreateFleet", "CreateLaunchTemplate"]
+          }
+
+          StringLike = {
+            "aws:RequestTag/karpenter.sh/nodepool" = "*"
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedResourceTagging"
+        Effect = "Allow"
+
+        Action = "ec2:CreateTags"
+
+        Resource = "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*"
+
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+          }
+
+          StringLike = {
+            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
+          }
+
+          StringEqualsIfExists = {
+            "aws:RequestTag/eks:eks-cluster-name" = var.cluster_name
+          }
+
+          "ForAllValues:StringEquals" = {
+            "aws:TagKeys" = ["eks:eks-cluster-name", "karpenter.sh/nodeclaim", "Name"]
+          }
+        }
+      },
+      {
+        Sid    = "AllowScopedDeletion"
+        Effect = "Allow"
+
+        Action = [
+          "ec2:TerminateInstances",
+          "ec2:RebootInstances",
+          "ec2:DeleteLaunchTemplate"
+        ]
+
+        Resource = [
+          "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*",
+          "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*"
+        ]
+
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+          }
+
+          StringLike = {
+            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
           }
         }
       },
@@ -253,6 +341,8 @@ resource "aws_iam_policy" "karpenter_controller" {
           "ec2:DescribeSubnets",
           "ec2:DescribeSecurityGroups",
           "ec2:DescribeInstanceStatus",
+          "ec2:DescribeCapacityReservations",
+          "ec2:DescribePlacementGroups",
           "pricing:GetProducts",
           "ssm:GetParameter",
           "eks:DescribeCluster"
@@ -273,8 +363,8 @@ resource "aws_iam_policy" "karpenter_controller" {
         Condition = {
           StringEquals = {
             "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
-            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
-            "aws:RequestTag/topology.kubernetes.io/region"              = "ap-south-1"
+            "aws:RequestTag/eks:eks-cluster-name"                      = var.cluster_name
+            "aws:RequestTag/topology.kubernetes.io/region"             = data.aws_region.current.name
           }
 
           StringLike = {
@@ -295,10 +385,10 @@ resource "aws_iam_policy" "karpenter_controller" {
         Condition = {
           StringEquals = {
             "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
-            "aws:ResourceTag/topology.kubernetes.io/region"              = "ap-south-1"
-            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+            "aws:ResourceTag/topology.kubernetes.io/region"             = data.aws_region.current.name
+            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}"  = "owned"
             "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
-            "aws:RequestTag/topology.kubernetes.io/region"              = "ap-south-1"
+            "aws:RequestTag/topology.kubernetes.io/region"              = data.aws_region.current.name
           }
 
           StringLike = {
@@ -322,7 +412,7 @@ resource "aws_iam_policy" "karpenter_controller" {
         Condition = {
           StringEquals = {
             "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
-            "aws:ResourceTag/topology.kubernetes.io/region"              = "ap-south-1"
+            "aws:ResourceTag/topology.kubernetes.io/region"             = data.aws_region.current.name
           }
 
           StringLike = {
@@ -431,9 +521,28 @@ spec:
 EOT
   )
 
+  # IMDSv2 only. Hop limit 2 lets pods that discover region/VPC through IMDS
+  # (for example the AWS Load Balancer Controller) keep working; lower it to 1
+  # once those values are set explicitly in the Helm values.
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      volume_size           = 20
+      volume_type           = "gp3"
+      encrypted             = true
+      delete_on_termination = true
+    }
+  }
+
   tag_specifications {
     resource_type = "instance"
-    tags = merge(var.tags, { Name = "${var.cluster_name}-managed-node" })
+    tags          = merge(var.tags, { Name = "${var.cluster_name}-managed-node" })
   }
 }
 
@@ -443,7 +552,7 @@ resource "aws_eks_node_group" "managed" {
   node_role_arn   = aws_iam_role.managed_node_group.arn
   subnet_ids      = var.private_subnet_ids
 
-  
+
 
   scaling_config {
     desired_size = var.managed_node_desired_size

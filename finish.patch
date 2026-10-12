@@ -1,0 +1,2361 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+new file mode 100644
+index 0000000..5b0cb09
+--- /dev/null
++++ b/.github/workflows/ci.yml
+@@ -0,0 +1,85 @@
++name: ci
++
++on:
++  push:
++    branches: [main]
++  pull_request:
++
++permissions:
++  contents: read
++
++jobs:
++  terraform:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: hashicorp/setup-terraform@v3
++      - name: fmt
++        run: terraform fmt -check -recursive 01-foundation
++      - name: validate
++        working-directory: 01-foundation
++        run: |
++          terraform init -backend=false -input=false
++          terraform validate
++
++  manifests:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: install kubeconform
++        run: |
++          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
++          sudo mv kubeconform /usr/local/bin/
++      - name: validate manifests (core + CRDs from the Datree catalog)
++        run: |
++          kubeconform -strict -summary \
++            -schema-location default \
++            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
++            -ignore-filename-pattern '.*\.json$' \
++            -ignore-filename-pattern '.*/values/.*' \
++            02-autoscaling 04-service-mesh 05-gitops 06-secrets 07-policy \
++            08-observability/demo-app 08-observability/slo 08-observability/alerts 08-observability/dashboards
++
++  kyverno:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: install kyverno CLI
++        run: |
++          curl -sSL https://github.com/kyverno/kyverno/releases/download/v1.13.4/kyverno-cli_v1.13.4_linux_x86_64.tar.gz | tar xz kyverno
++          sudo mv kyverno /usr/local/bin/
++      - name: policy tests
++        run: ./07-policy/run-tests.sh
++
++  prometheus:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: install promtool
++        run: |
++          curl -sSL https://github.com/prometheus/prometheus/releases/download/v3.5.0/prometheus-3.5.0.linux-amd64.tar.gz \
++            | tar xz --strip-components=1 prometheus-3.5.0.linux-amd64/promtool
++          sudo mv promtool /usr/local/bin/
++      - run: pip install pyyaml
++      - name: lint and unit-test alert rules, check dashboard queries
++        run: ./scripts/test-prometheus-rules.sh
++
++  placeholders:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: no unresolved placeholders in GitOps config
++        run: |
++          if grep -rnE 'PIN_LATEST|REPLACE_VELERO_BUCKET' 05-gitops; then
++            echo "Run 'make pin' and 'make velero-bucket', then commit the result."; exit 1
++          fi
++
++  secrets:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++        with:
++          fetch-depth: 0
++      - uses: gitleaks/gitleaks-action@v2
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+diff --git a/.github/workflows/image.yml b/.github/workflows/image.yml
+new file mode 100644
+index 0000000..97bc658
+--- /dev/null
++++ b/.github/workflows/image.yml
+@@ -0,0 +1,63 @@
++name: image
++
++# Builds the demo image, pushes it to GHCR, then signs it with Cosign (keyless,
++# GitHub OIDC) and attaches SLSA build provenance. Kyverno verifies this identity
++# (07-policy/policies/verify-image-signatures.yaml). See ADR-008.
++on:
++  push:
++    branches: [main]
++    paths:
++      - "app/**"
++      - ".github/workflows/image.yml"
++  workflow_dispatch:
++
++permissions:
++  contents: read
++  packages: write       # push to GHCR
++  id-token: write       # keyless signing (OIDC)
++  attestations: write   # build provenance
++
++jobs:
++  build-sign:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: image name (GHCR requires lowercase)
++        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}/demo-app" >> "$GITHUB_ENV"
++
++      - uses: docker/login-action@v3
++        with:
++          registry: ghcr.io
++          username: ${{ github.actor }}
++          password: ${{ secrets.GITHUB_TOKEN }}
++
++      - uses: docker/setup-buildx-action@v3
++
++      - name: build and push
++        id: build
++        uses: docker/build-push-action@v6
++        with:
++          context: app/demo-app
++          push: true
++          tags: |
++            ${{ env.IMAGE }}:${{ github.sha }}
++            ${{ env.IMAGE }}:latest
++          provenance: mode=max
++          sbom: true
++
++      - uses: sigstore/cosign-installer@v3
++
++      - name: sign by digest (keyless)
++        run: cosign sign --yes "${IMAGE}@${{ steps.build.outputs.digest }}"
++
++      - name: SLSA build provenance attestation
++        uses: actions/attest-build-provenance@v2
++        with:
++          subject-name: ${{ env.IMAGE }}
++          subject-digest: ${{ steps.build.outputs.digest }}
++          push-to-registry: true
++
++      - name: summary
++        run: |
++          echo "Signed image: ${IMAGE}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+diff --git a/.gitignore b/.gitignore
+index 9fd927a..a67703a 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,12 +1,27 @@
++# Terraform
+ .terraform/
+ *.tfstate
+ *.tfstate.*
++crash.log
++crash.*.log
++*.tfvars
++*.tfvars.json
++override.tf
++override.tf.json
++*_override.tf
++*_override.tf.json
++.terraformrc
++terraform.rc
++# keep .terraform.lock.hcl committed
++
++# Local artifacts
+ *.log
+ *.zip
+ *.tar
+ *.tar.gz
+-*.tfstate*
+-
++.env
+ 
++# OS / editor
+ .DS_Store
+-.DS_Store
++.idea/
++.vscode/
+diff --git a/01-foundation/main.tf b/01-foundation/main.tf
+index e4f041f..8e8a6c5 100644
+--- a/01-foundation/main.tf
++++ b/01-foundation/main.tf
+@@ -36,5 +36,6 @@ module "eks" {
+   managed_node_min_size       = var.managed_node_min_size
+   managed_node_max_size       = var.managed_node_max_size
+   managed_node_desired_size   = var.managed_node_desired_size
+-  tags = var.tags
++  public_access_cidrs         = var.public_access_cidrs
++  tags                        = var.tags
+ }
+diff --git a/01-foundation/modules/eks/main.tf b/01-foundation/modules/eks/main.tf
+index af74523..9eedf66 100644
+--- a/01-foundation/modules/eks/main.tf
++++ b/01-foundation/modules/eks/main.tf
+@@ -28,16 +28,18 @@ resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+   role       = aws_iam_role.eks_cluster.name
+   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+ }
++data "aws_region" "current" {}
++
+ resource "aws_eks_cluster" "this" {
+   name     = var.cluster_name
+   version  = var.cluster_version
+   role_arn = aws_iam_role.eks_cluster.arn
+ 
+   vpc_config {
+-    subnet_ids         = concat(var.private_subnet_ids, var.public_subnet_ids)
+-    endpoint_public_access = true
++    subnet_ids              = concat(var.private_subnet_ids, var.public_subnet_ids)
++    endpoint_public_access  = true
+     endpoint_private_access = true
+-    public_access_cidrs = ["223.185.135.110/32"]
++    public_access_cidrs     = var.public_access_cidrs
+   }
+   access_config {
+     authentication_mode                         = "API_AND_CONFIG_MAP"
+@@ -51,7 +53,7 @@ resource "aws_eks_cluster" "this" {
+     }
+   }
+ 
+-  
++
+ 
+   enabled_cluster_log_types = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
+ 
+@@ -60,6 +62,14 @@ resource "aws_eks_cluster" "this" {
+   depends_on = [aws_iam_role_policy_attachment.eks_cluster_policy]
+ }
+ 
++# Karpenter discovers the security group for new nodes by this tag
++# (see 02-autoscaling/ec2nodeclass.yaml). Subnets are tagged in modules/vpc.
++resource "aws_ec2_tag" "cluster_sg_karpenter_discovery" {
++  resource_id = aws_eks_cluster.this.vpc_config[0].cluster_security_group_id
++  key         = "karpenter.sh/discovery"
++  value       = var.cluster_name
++}
++
+ resource "aws_eks_addon" "vpc_cni" {
+   cluster_name = aws_eks_cluster.this.name
+   addon_name   = "vpc-cni"
+@@ -169,7 +179,7 @@ resource "aws_iam_policy" "karpenter_controller" {
+   policy = jsonencode({
+     Version = "2012-10-17"
+     Statement = [
+-                {
++      {
+         Sid    = "AllowScopedEC2InstanceAccessActions"
+         Effect = "Allow"
+ 
+@@ -179,12 +189,12 @@ resource "aws_iam_policy" "karpenter_controller" {
+         ]
+ 
+         Resource = [
+-          "arn:aws:ec2:ap-south-1::image/*",
+-          "arn:aws:ec2:ap-south-1::snapshot/*",
+-          "arn:aws:ec2:ap-south-1:*:security-group/*",
+-          "arn:aws:ec2:ap-south-1:*:subnet/*",
+-          "arn:aws:ec2:ap-south-1:*:capacity-reservation/*",
+-          "arn:aws:ec2:ap-south-1:*:placement-group/*"
++          "arn:aws:ec2:${data.aws_region.current.name}::image/*",
++          "arn:aws:ec2:${data.aws_region.current.name}::snapshot/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:security-group/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:subnet/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:capacity-reservation/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:placement-group/*"
+         ]
+       },
+       {
+@@ -196,7 +206,7 @@ resource "aws_iam_policy" "karpenter_controller" {
+           "ec2:CreateFleet"
+         ]
+ 
+-        Resource = "arn:aws:ec2:ap-south-1:*:launch-template/*"
++        Resource = "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*"
+ 
+         Condition = {
+           StringEquals = {
+@@ -219,18 +229,18 @@ resource "aws_iam_policy" "karpenter_controller" {
+         ]
+ 
+         Resource = [
+-          "arn:aws:ec2:ap-south-1:*:fleet/*",
+-          "arn:aws:ec2:ap-south-1:*:instance/*",
+-          "arn:aws:ec2:ap-south-1:*:volume/*",
+-          "arn:aws:ec2:ap-south-1:*:network-interface/*",
+-          "arn:aws:ec2:ap-south-1:*:launch-template/*",
+-          "arn:aws:ec2:ap-south-1:*:spot-instances-request/*"
++          "arn:aws:ec2:${data.aws_region.current.name}:*:fleet/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:volume/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:network-interface/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:spot-instances-request/*"
+         ]
+ 
+         Condition = {
+           StringEquals = {
+             "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+-            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
++            "aws:RequestTag/eks:eks-cluster-name"                      = var.cluster_name
+           }
+ 
+           StringLike = {
+@@ -238,6 +248,84 @@ resource "aws_iam_policy" "karpenter_controller" {
+           }
+         }
+       },
++      {
++        Sid    = "AllowScopedResourceCreationTagging"
++        Effect = "Allow"
++
++        Action = "ec2:CreateTags"
++
++        Resource = [
++          "arn:aws:ec2:${data.aws_region.current.name}:*:fleet/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:volume/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:network-interface/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:spot-instances-request/*"
++        ]
++
++        Condition = {
++          StringEquals = {
++            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
++            "aws:RequestTag/eks:eks-cluster-name"                      = var.cluster_name
++            "ec2:CreateAction"                                         = ["RunInstances", "CreateFleet", "CreateLaunchTemplate"]
++          }
++
++          StringLike = {
++            "aws:RequestTag/karpenter.sh/nodepool" = "*"
++          }
++        }
++      },
++      {
++        Sid    = "AllowScopedResourceTagging"
++        Effect = "Allow"
++
++        Action = "ec2:CreateTags"
++
++        Resource = "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*"
++
++        Condition = {
++          StringEquals = {
++            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
++          }
++
++          StringLike = {
++            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
++          }
++
++          StringEqualsIfExists = {
++            "aws:RequestTag/eks:eks-cluster-name" = var.cluster_name
++          }
++
++          "ForAllValues:StringEquals" = {
++            "aws:TagKeys" = ["eks:eks-cluster-name", "karpenter.sh/nodeclaim", "Name"]
++          }
++        }
++      },
++      {
++        Sid    = "AllowScopedDeletion"
++        Effect = "Allow"
++
++        Action = [
++          "ec2:TerminateInstances",
++          "ec2:RebootInstances",
++          "ec2:DeleteLaunchTemplate"
++        ]
++
++        Resource = [
++          "arn:aws:ec2:${data.aws_region.current.name}:*:instance/*",
++          "arn:aws:ec2:${data.aws_region.current.name}:*:launch-template/*"
++        ]
++
++        Condition = {
++          StringEquals = {
++            "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
++          }
++
++          StringLike = {
++            "aws:ResourceTag/karpenter.sh/nodepool" = "*"
++          }
++        }
++      },
+       {
+         Sid    = "AllowDescribeActions"
+         Effect = "Allow"
+@@ -253,6 +341,8 @@ resource "aws_iam_policy" "karpenter_controller" {
+           "ec2:DescribeSubnets",
+           "ec2:DescribeSecurityGroups",
+           "ec2:DescribeInstanceStatus",
++          "ec2:DescribeCapacityReservations",
++          "ec2:DescribePlacementGroups",
+           "pricing:GetProducts",
+           "ssm:GetParameter",
+           "eks:DescribeCluster"
+@@ -273,8 +363,8 @@ resource "aws_iam_policy" "karpenter_controller" {
+         Condition = {
+           StringEquals = {
+             "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+-            "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
+-            "aws:RequestTag/topology.kubernetes.io/region"              = "ap-south-1"
++            "aws:RequestTag/eks:eks-cluster-name"                      = var.cluster_name
++            "aws:RequestTag/topology.kubernetes.io/region"             = data.aws_region.current.name
+           }
+ 
+           StringLike = {
+@@ -295,10 +385,10 @@ resource "aws_iam_policy" "karpenter_controller" {
+         Condition = {
+           StringEquals = {
+             "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+-            "aws:ResourceTag/topology.kubernetes.io/region"              = "ap-south-1"
+-            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
++            "aws:ResourceTag/topology.kubernetes.io/region"             = data.aws_region.current.name
++            "aws:RequestTag/kubernetes.io/cluster/${var.cluster_name}"  = "owned"
+             "aws:RequestTag/eks:eks-cluster-name"                       = var.cluster_name
+-            "aws:RequestTag/topology.kubernetes.io/region"              = "ap-south-1"
++            "aws:RequestTag/topology.kubernetes.io/region"              = data.aws_region.current.name
+           }
+ 
+           StringLike = {
+@@ -322,7 +412,7 @@ resource "aws_iam_policy" "karpenter_controller" {
+         Condition = {
+           StringEquals = {
+             "aws:ResourceTag/kubernetes.io/cluster/${var.cluster_name}" = "owned"
+-            "aws:ResourceTag/topology.kubernetes.io/region"              = "ap-south-1"
++            "aws:ResourceTag/topology.kubernetes.io/region"             = data.aws_region.current.name
+           }
+ 
+           StringLike = {
+@@ -431,9 +521,28 @@ spec:
+ EOT
+   )
+ 
++  # IMDSv2 only. Hop limit 2 lets pods that discover region/VPC through IMDS
++  # (for example the AWS Load Balancer Controller) keep working; lower it to 1
++  # once those values are set explicitly in the Helm values.
++  metadata_options {
++    http_endpoint               = "enabled"
++    http_tokens                 = "required"
++    http_put_response_hop_limit = 2
++  }
++
++  block_device_mappings {
++    device_name = "/dev/xvda"
++    ebs {
++      volume_size           = 20
++      volume_type           = "gp3"
++      encrypted             = true
++      delete_on_termination = true
++    }
++  }
++
+   tag_specifications {
+     resource_type = "instance"
+-    tags = merge(var.tags, { Name = "${var.cluster_name}-managed-node" })
++    tags          = merge(var.tags, { Name = "${var.cluster_name}-managed-node" })
+   }
+ }
+ 
+@@ -443,7 +552,7 @@ resource "aws_eks_node_group" "managed" {
+   node_role_arn   = aws_iam_role.managed_node_group.arn
+   subnet_ids      = var.private_subnet_ids
+ 
+-  
++
+ 
+   scaling_config {
+     desired_size = var.managed_node_desired_size
+diff --git a/01-foundation/modules/eks/variables.tf b/01-foundation/modules/eks/variables.tf
+index f519643..4ea8605 100644
+--- a/01-foundation/modules/eks/variables.tf
++++ b/01-foundation/modules/eks/variables.tf
+@@ -50,4 +50,14 @@ variable "tags" {
+   description = "Tags to apply to resources"
+   type        = map(string)
+   default     = {}
+-}
+\ No newline at end of file
++}
++
++variable "public_access_cidrs" {
++  description = "CIDR blocks allowed to reach the public EKS API endpoint"
++  type        = list(string)
++
++  validation {
++    condition     = length(var.public_access_cidrs) > 0
++    error_message = "Set at least one CIDR, for example [\"203.0.113.10/32\"]."
++  }
++}
+diff --git a/01-foundation/modules/vpc/main.tf b/01-foundation/modules/vpc/main.tf
+index 998abd5..68ba2af 100644
+--- a/01-foundation/modules/vpc/main.tf
++++ b/01-foundation/modules/vpc/main.tf
+@@ -14,8 +14,8 @@ resource "aws_subnet" "public" {
+   availability_zone       = data.aws_availability_zones.available.names[count.index]
+   map_public_ip_on_launch = true
+   tags = merge(var.tags, {
+-    Name                     = "public-subnet-${count.index}"
+-    "kubernetes.io/role/elb" = "1",
++    Name                                        = "public-subnet-${count.index}"
++    "kubernetes.io/role/elb"                    = "1",
+     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+   })
+ }
+@@ -26,8 +26,9 @@ resource "aws_subnet" "private" {
+   cidr_block        = cidrsubnet(var.vpc_cidr, 8, count.index + var.az_count)
+   availability_zone = data.aws_availability_zones.available.names[count.index]
+   tags = merge(var.tags, {
+-    Name                            = "private-subnet-${count.index}"
+-    "kubernetes.io/role/internal-elb" = "1",
++    Name                                        = "private-subnet-${count.index}"
++    "kubernetes.io/role/internal-elb"           = "1",
++    "karpenter.sh/discovery"                    = var.cluster_name,
+     "kubernetes.io/cluster/${var.cluster_name}" = "shared"
+   })
+ }
+diff --git a/01-foundation/modules/vpc/variables.tf b/01-foundation/modules/vpc/variables.tf
+index 4c114f7..9c0ca44 100644
+--- a/01-foundation/modules/vpc/variables.tf
++++ b/01-foundation/modules/vpc/variables.tf
+@@ -17,6 +17,6 @@ variable "tags" {
+ 
+ variable "cluster_name" {
+   description = "cluster_name"
+-  type = string
+-  
++  type        = string
++
+ }
+\ No newline at end of file
+diff --git a/01-foundation/terraform.tfvars.example b/01-foundation/terraform.tfvars.example
+new file mode 100644
+index 0000000..b50927f
+--- /dev/null
++++ b/01-foundation/terraform.tfvars.example
+@@ -0,0 +1,3 @@
++# Copy to terraform.tfvars (gitignored) and edit.
++# Your public IP: curl -s https://checkip.amazonaws.com
++public_access_cidrs = ["203.0.113.10/32"]
+diff --git a/01-foundation/variables.tf b/01-foundation/variables.tf
+index 18c1319..6101d6e 100644
+--- a/01-foundation/variables.tf
++++ b/01-foundation/variables.tf
+@@ -60,3 +60,8 @@ variable "tags" {
+     Terraform   = "true"
+   }
+ }
++
++variable "public_access_cidrs" {
++  description = "CIDR blocks allowed to reach the public EKS API endpoint (your IP as x.x.x.x/32)"
++  type        = list(string)
++}
+diff --git a/01-foundation/velero.tf b/01-foundation/velero.tf
+new file mode 100644
+index 0000000..f9487a7
+--- /dev/null
++++ b/01-foundation/velero.tf
+@@ -0,0 +1,126 @@
++# ADR-009: S3 bucket and Pod Identity role for Velero resource backups.
++
++data "aws_caller_identity" "current" {}
++
++locals {
++  velero_bucket = "${var.cluster_name}-velero-${data.aws_caller_identity.current.account_id}"
++}
++
++resource "aws_s3_bucket" "velero" {
++  bucket = local.velero_bucket
++  # Lab setting so `terraform destroy` works while backups exist. Remove for anything real.
++  force_destroy = true
++  tags          = var.tags
++}
++
++resource "aws_s3_bucket_versioning" "velero" {
++  bucket = aws_s3_bucket.velero.id
++  versioning_configuration {
++    status = "Enabled"
++  }
++}
++
++resource "aws_s3_bucket_server_side_encryption_configuration" "velero" {
++  bucket = aws_s3_bucket.velero.id
++  rule {
++    apply_server_side_encryption_by_default {
++      sse_algorithm = "AES256"
++    }
++  }
++}
++
++resource "aws_s3_bucket_public_access_block" "velero" {
++  bucket                  = aws_s3_bucket.velero.id
++  block_public_acls       = true
++  block_public_policy     = true
++  ignore_public_acls      = true
++  restrict_public_buckets = true
++}
++
++resource "aws_s3_bucket_lifecycle_configuration" "velero" {
++  bucket = aws_s3_bucket.velero.id
++
++  rule {
++    id     = "expire-old-backups"
++    status = "Enabled"
++
++    filter {}
++
++    # Velero's own TTL deletes backups after 72h; this is a safety net.
++    expiration {
++      days = 35
++    }
++    noncurrent_version_expiration {
++      noncurrent_days = 7
++    }
++  }
++}
++
++resource "aws_iam_role" "velero" {
++  name = "${var.cluster_name}-velero"
++
++  assume_role_policy = jsonencode({
++    Version = "2012-10-17"
++    Statement = [
++      {
++        Effect    = "Allow"
++        Principal = { Service = "pods.eks.amazonaws.com" }
++        Action    = ["sts:AssumeRole", "sts:TagSession"]
++      }
++    ]
++  })
++
++  tags = var.tags
++}
++
++resource "aws_iam_policy" "velero" {
++  name = "${var.cluster_name}-velero"
++
++  policy = jsonencode({
++    Version = "2012-10-17"
++    Statement = [
++      {
++        Sid    = "ObjectAccess"
++        Effect = "Allow"
++        Action = [
++          "s3:GetObject",
++          "s3:DeleteObject",
++          "s3:PutObject",
++          "s3:AbortMultipartUpload",
++          "s3:ListMultipartUploadParts"
++        ]
++        Resource = "${aws_s3_bucket.velero.arn}/*"
++      },
++      {
++        Sid      = "ListBucket"
++        Effect   = "Allow"
++        Action   = ["s3:ListBucket"]
++        Resource = aws_s3_bucket.velero.arn
++      }
++    ]
++  })
++
++  tags = var.tags
++}
++
++resource "aws_iam_role_policy_attachment" "velero" {
++  role       = aws_iam_role.velero.name
++  policy_arn = aws_iam_policy.velero.arn
++}
++
++resource "aws_eks_pod_identity_association" "velero" {
++  cluster_name    = module.eks.cluster_name
++  namespace       = "velero"
++  service_account = "velero"
++  role_arn        = aws_iam_role.velero.arn
++
++  depends_on = [
++    module.eks,
++    aws_iam_role_policy_attachment.velero
++  ]
++}
++
++output "velero_bucket" {
++  description = "S3 bucket that holds Velero backups"
++  value       = aws_s3_bucket.velero.bucket
++}
+diff --git a/02-autoscaling/ec2nodeclass.yaml b/02-autoscaling/ec2nodeclass.yaml
+index cba8b1d..fb8e96f 100644
+--- a/02-autoscaling/ec2nodeclass.yaml
++++ b/02-autoscaling/ec2nodeclass.yaml
+@@ -11,5 +11,19 @@ spec:
+   securityGroupSelectorTerms:
+     - tags:
+         karpenter.sh/discovery: "my-eks-cluster"
++  # Tracks the latest AL2023 AMI. Fine for a lab; pin a specific alias
++  # (al2023@v<date>) for anything that needs reproducible nodes.
+   amiSelectorTerms:
+     - alias: al2023@latest
++  # IMDSv2 only. Hop limit 2 keeps pods that read region/VPC from IMDS working.
++  metadataOptions:
++    httpEndpoint: enabled
++    httpTokens: required
++    httpPutResponseHopLimit: 2
++  blockDeviceMappings:
++    - deviceName: /dev/xvda
++      ebs:
++        volumeSize: 20Gi
++        volumeType: gp3
++        encrypted: true
++        deleteOnTermination: true
+diff --git a/04-service-mesh/demo-app-service.yaml b/04-service-mesh/demo-app-service.yaml
+new file mode 100644
+index 0000000..5b4c00b
+--- /dev/null
++++ b/04-service-mesh/demo-app-service.yaml
+@@ -0,0 +1,14 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: demo-app
++  namespace: istio-lab
++  labels:
++    app: demo-app
++spec:
++  selector:
++    app: demo-app
++  ports:
++    - name: http          # named port so Istio treats the traffic as HTTP
++      port: 80
++      targetPort: 5678    # hashicorp/http-echo listens on 5678
+diff --git a/05-gitops/apps/blackbox-exporter.yaml b/05-gitops/apps/blackbox-exporter.yaml
+new file mode 100644
+index 0000000..5d33762
+--- /dev/null
++++ b/05-gitops/apps/blackbox-exporter.yaml
+@@ -0,0 +1,25 @@
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: blackbox-exporter
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "1"
++spec:
++  project: default
++  source:
++    repoURL: https://prometheus-community.github.io/helm-charts
++    chart: prometheus-blackbox-exporter
++    targetRevision: PIN_LATEST   # resolved by scripts/pin_charts.py
++    helm:
++      values: |
++        fullnameOverride: blackbox-exporter   # service: blackbox-exporter.monitoring.svc:9115
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: monitoring
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - CreateNamespace=true
+diff --git a/05-gitops/apps/karpenter.yaml b/05-gitops/apps/karpenter.yaml
+index f9c0192..3bacfdc 100644
+--- a/05-gitops/apps/karpenter.yaml
++++ b/05-gitops/apps/karpenter.yaml
+@@ -7,9 +7,20 @@ spec:
+   project: default
+ 
+   source:
+-    repoURL: public.ecr.aws/karpenter/karpenter
++    # OCI Helm chart: Argo CD expects the registry path WITHOUT the chart name here.
++    # The OCI repository is registered in repo-karpenter-oci.yaml.
++    repoURL: public.ecr.aws/karpenter
+     chart: karpenter
+     targetRevision: 1.14.1
++    helm:
++      values: |
++        settings:
++          clusterName: my-eks-cluster
++        # Lab sizing: the baseline is a single managed node, and the chart's
++        # default of 2 replicas uses anti-affinity that would leave one Pending.
++        replicas: 1
++        serviceAccount:
++          name: karpenter   # must match aws_eks_pod_identity_association in 01-foundation
+ 
+   destination:
+     server: https://kubernetes.default.svc
+@@ -18,4 +29,6 @@ spec:
+   syncPolicy:
+     automated:
+       prune: true
+-      selfHeal: true
+\ No newline at end of file
++      selfHeal: true
++    syncOptions:
++      - CreateNamespace=true
+diff --git a/05-gitops/apps/kube-prometheus-stack.yaml b/05-gitops/apps/kube-prometheus-stack.yaml
+new file mode 100644
+index 0000000..1b64e04
+--- /dev/null
++++ b/05-gitops/apps/kube-prometheus-stack.yaml
+@@ -0,0 +1,29 @@
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: kube-prometheus-stack
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "0"
++spec:
++  project: default
++  sources:
++    - repoURL: https://prometheus-community.github.io/helm-charts
++      chart: kube-prometheus-stack
++      targetRevision: PIN_LATEST   # resolved by scripts/pin_charts.py
++      helm:
++        valueFiles:
++          - $values/08-observability/install/kube-prometheus-stack-values.yaml
++    - repoURL: https://github.com/mansuralamkhan/eks-setup.git
++      targetRevision: main
++      ref: values
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: monitoring
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - CreateNamespace=true
++      - ServerSideApply=true   # the Prometheus Operator CRDs are too large for client-side apply
+diff --git a/05-gitops/apps/kyverno-policies.yaml b/05-gitops/apps/kyverno-policies.yaml
+new file mode 100644
+index 0000000..b2f09e9
+--- /dev/null
++++ b/05-gitops/apps/kyverno-policies.yaml
+@@ -0,0 +1,22 @@
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: kyverno-policies
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "2"   # after Kyverno and its CRDs are up
++spec:
++  project: default
++  source:
++    repoURL: https://github.com/mansuralamkhan/eks-setup.git
++    targetRevision: main
++    path: 07-policy/policies
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: kyverno
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - SkipDryRunOnMissingResource=true
+diff --git a/05-gitops/apps/kyverno.yaml b/05-gitops/apps/kyverno.yaml
+new file mode 100644
+index 0000000..701b775
+--- /dev/null
++++ b/05-gitops/apps/kyverno.yaml
+@@ -0,0 +1,23 @@
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: kyverno
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "0"
++spec:
++  project: default
++  source:
++    repoURL: https://kyverno.github.io/kyverno/
++    chart: kyverno
++    targetRevision: PIN_LATEST   # resolved by scripts/pin_charts.py
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: kyverno
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - CreateNamespace=true
++      - ServerSideApply=true
+diff --git a/05-gitops/apps/observability-config.yaml b/05-gitops/apps/observability-config.yaml
+new file mode 100644
+index 0000000..807dfad
+--- /dev/null
++++ b/05-gitops/apps/observability-config.yaml
+@@ -0,0 +1,30 @@
++# Probe, SLO rules, workload alerts and the Grafana dashboard (all need the
++# Prometheus Operator CRDs from kube-prometheus-stack).
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: observability-config
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "2"
++spec:
++  project: default
++  sources:
++    - repoURL: https://github.com/mansuralamkhan/eks-setup.git
++      targetRevision: main
++      path: 08-observability/slo
++    - repoURL: https://github.com/mansuralamkhan/eks-setup.git
++      targetRevision: main
++      path: 08-observability/alerts
++    - repoURL: https://github.com/mansuralamkhan/eks-setup.git
++      targetRevision: main
++      path: 08-observability/dashboards
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: monitoring
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - SkipDryRunOnMissingResource=true
+diff --git a/05-gitops/apps/repo-karpenter-oci.yaml b/05-gitops/apps/repo-karpenter-oci.yaml
+new file mode 100644
+index 0000000..800258d
+--- /dev/null
++++ b/05-gitops/apps/repo-karpenter-oci.yaml
+@@ -0,0 +1,17 @@
++# Registers the public Karpenter OCI registry with Argo CD (no credentials needed).
++# If you already ran `argocd repo add public.ecr.aws/karpenter --type helm --enable-oci`,
++# you can delete this file.
++apiVersion: v1
++kind: Secret
++metadata:
++  name: repo-karpenter-oci
++  namespace: argocd
++  labels:
++    argocd.argoproj.io/secret-type: repository
++  annotations:
++    argocd.argoproj.io/sync-wave: "-1"
++stringData:
++  name: karpenter
++  type: helm
++  url: public.ecr.aws/karpenter
++  enableOCI: "true"
+diff --git a/05-gitops/apps/velero.yaml b/05-gitops/apps/velero.yaml
+new file mode 100644
+index 0000000..b6d792e
+--- /dev/null
++++ b/05-gitops/apps/velero.yaml
+@@ -0,0 +1,28 @@
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: velero
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "1"
++spec:
++  project: default
++  sources:
++    - repoURL: https://vmware-tanzu.github.io/helm-charts
++      chart: velero
++      targetRevision: PIN_LATEST   # resolved by scripts/pin_charts.py
++      helm:
++        valueFiles:
++          - $values/05-gitops/values/velero-values.yaml
++    - repoURL: https://github.com/mansuralamkhan/eks-setup.git
++      targetRevision: main
++      ref: values
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: velero
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - CreateNamespace=true
+diff --git a/05-gitops/values/velero-values.yaml b/05-gitops/values/velero-values.yaml
+new file mode 100644
+index 0000000..aae3475
+--- /dev/null
++++ b/05-gitops/values/velero-values.yaml
+@@ -0,0 +1,44 @@
++# ADR-009. Scope today: Kubernetes RESOURCE backups (manifests, CRDs, config).
++# Persistent volume snapshots are off: this cluster has no stateful workloads that
++# need them. Turn them on (snapshotsEnabled, volumeSnapshotLocation, EBS CSI) before
++# relying on Velero for data.
++initContainers:
++  - name: velero-plugin-for-aws
++    # Check the plugin/Velero compatibility table in the plugin's README when you bump the chart.
++    image: velero/velero-plugin-for-aws:v1.12.0
++    volumeMounts:
++      - mountPath: /target
++        name: plugins
++
++# Credentials come from EKS Pod Identity (aws_eks_pod_identity_association in
++# 01-foundation/velero.tf), not from a Secret.
++credentials:
++  useSecret: false
++
++serviceAccount:
++  server:
++    create: true
++    name: velero   # must match the Pod Identity association
++
++configuration:
++  backupStorageLocation:
++    - name: default
++      provider: aws
++      bucket: REPLACE_VELERO_BUCKET   # filled in by scripts/set-velero-bucket.sh
++      config:
++        region: ap-south-1
++  volumeSnapshotLocation: []
++
++snapshotsEnabled: false
++deployNodeAgent: false
++
++schedules:
++  daily-resources:
++    schedule: "0 2 * * *"   # 02:00 UTC
++    template:
++      ttl: 72h0m0s
++      snapshotVolumes: false
++      excludedNamespaces:
++        - kube-system
++        - kube-public
++        - kube-node-lease
+diff --git a/07-policy/policies/verify-image-signatures.yaml b/07-policy/policies/verify-image-signatures.yaml
+new file mode 100644
+index 0000000..12c5bf1
+--- /dev/null
++++ b/07-policy/policies/verify-image-signatures.yaml
+@@ -0,0 +1,36 @@
++# ADR-008: images from this repo's GHCR namespace must be signed by this repo's
++# image workflow. Audit first (same rollout as ADR-002): violations show up in
++# PolicyReports and nothing is blocked until you switch to Enforce.
++apiVersion: kyverno.io/v1
++kind: ClusterPolicy
++metadata:
++  name: verify-image-signatures
++  annotations:
++    policies.kyverno.io/title: Verify image signatures (Cosign keyless)
++    policies.kyverno.io/category: Supply Chain Security
++    policies.kyverno.io/severity: high
++spec:
++  validationFailureAction: Audit
++  background: false
++  webhookTimeoutSeconds: 30
++  failurePolicy: Ignore   # a Sigstore outage must not block scheduling in Audit mode
++  rules:
++    - name: verify-cosign-keyless
++      match:
++        any:
++          - resources:
++              kinds:
++                - Pod
++      verifyImages:
++        - imageReferences:
++            - "ghcr.io/mansuralamkhan/eks-setup/*"
++          required: true
++          verifyDigest: true
++          mutateDigest: false   # turn on together with Enforce
++          attestors:
++            - entries:
++                - keyless:
++                    issuer: "https://token.actions.githubusercontent.com"
++                    subject: "https://github.com/mansuralamkhan/eks-setup/.github/workflows/image.yml@refs/heads/main"
++                    rekor:
++                      url: https://rekor.sigstore.dev
+diff --git a/07-policy/run-tests.sh b/07-policy/run-tests.sh
+new file mode 100755
+index 0000000..f35931c
+--- /dev/null
++++ b/07-policy/run-tests.sh
+@@ -0,0 +1,16 @@
++#!/usr/bin/env bash
++# Offline test for the Kyverno policies. Needs the kyverno CLI (https://kyverno.io/docs/kyverno-cli/).
++# passing-*  must produce 0 failures; violating-* must produce at least 1.
++set -u
++cd "$(dirname "$0")"
++status=0
++for f in tests/*.yaml; do
++  out=$(kyverno apply policies/ --resource "$f" 2>&1)
++  fails=$(echo "$out" | sed -n 's/.*fail: \([0-9]*\).*/\1/p' | head -1)
++  fails=${fails:-0}
++  case "$(basename "$f")" in
++    passing-*)   [ "$fails" -eq 0 ] && echo "ok   $f (0 failures)" || { echo "FAIL $f expected pass"; echo "$out"; status=1; } ;;
++    violating-*) [ "$fails" -gt 0 ] && echo "ok   $f ($fails failure(s), as expected)" || { echo "FAIL $f expected violation"; echo "$out"; status=1; } ;;
++  esac
++done
++exit $status
+diff --git a/08-observability/alerts/prometheusrule-workload.yaml b/08-observability/alerts/prometheusrule-workload.yaml
+new file mode 100644
+index 0000000..ddc7222
+--- /dev/null
++++ b/08-observability/alerts/prometheusrule-workload.yaml
+@@ -0,0 +1,44 @@
++# Closes the gap found in Incident 01: a restart-count panel cannot see ImagePullBackOff,
++# because the container never starts. These alerts watch the waiting reason directly,
++# and Incident 02's OOMKilled case.
++apiVersion: monitoring.coreos.com/v1
++kind: PrometheusRule
++metadata:
++  name: workload-health
++  namespace: monitoring
++  labels:
++    app.kubernetes.io/part-of: workload-alerts
++spec:
++  groups:
++    - name: workload-health
++      rules:
++        - alert: PodImagePullFailure
++          expr: |
++            max by (namespace, pod, container, reason) (
++              kube_pod_container_status_waiting_reason{reason=~"ErrImagePull|ImagePullBackOff|InvalidImageName"}
++            ) == 1
++          for: 3m
++          labels:
++            severity: ticket
++          annotations:
++            summary: "{{ $labels.namespace }}/{{ $labels.pod }} cannot pull its image ({{ $labels.reason }})"
++            description: Check the image tag and registry access. This never shows up as a restart (Incident 01).
++        - alert: PodOOMKilled
++          expr: |
++            max by (namespace, pod, container) (
++              kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}
++            ) == 1
++            and on (namespace, pod, container)
++            increase(kube_pod_container_status_restarts_total[10m]) > 0
++          labels:
++            severity: ticket
++          annotations:
++            summary: "{{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled"
++            description: Compare the memory working set with the container limit (Incident 02).
++        - alert: PodCrashLooping
++          expr: increase(kube_pod_container_status_restarts_total[15m]) > 3
++          for: 5m
++          labels:
++            severity: ticket
++          annotations:
++            summary: "{{ $labels.namespace }}/{{ $labels.pod }} is restarting repeatedly"
+diff --git a/08-observability/dashboards/platform-dashboard.yaml b/08-observability/dashboards/platform-dashboard.yaml
+new file mode 100644
+index 0000000..9a78b76
+--- /dev/null
++++ b/08-observability/dashboards/platform-dashboard.yaml
+@@ -0,0 +1,370 @@
++apiVersion: v1
++kind: ConfigMap
++metadata:
++  name: platform-overview-dashboard
++  namespace: monitoring
++  labels:
++    grafana_dashboard: '1'
++data:
++  platform-overview.json: |-
++    {
++      "uid": "platform-overview",
++      "title": "Platform overview",
++      "tags": [
++        "eks-setup"
++      ],
++      "timezone": "browser",
++      "schemaVersion": 39,
++      "version": 1,
++      "refresh": "30s",
++      "time": {
++        "from": "now-6h",
++        "to": "now"
++      },
++      "panels": [
++        {
++          "id": 1,
++          "title": "Container restarts (15m)",
++          "type": "timeseries",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 0,
++            "y": 0,
++            "w": 12,
++            "h": 8
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total[15m]))",
++              "legendFormat": "{{namespace}}/{{pod}}",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {},
++            "overrides": []
++          },
++          "description": "Catches crash loops and OOMKills (Incident 02). Cannot see containers that never start."
++        },
++        {
++          "id": 2,
++          "title": "Containers stuck waiting, by reason",
++          "type": "timeseries",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 12,
++            "y": 0,
++            "w": 12,
++            "h": 8
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "sum by (reason) (kube_pod_container_status_waiting_reason == 1)",
++              "legendFormat": "{{reason}}",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {},
++            "overrides": []
++          },
++          "description": "Closes the Incident 01 gap: ImagePullBackOff / ErrImagePull never register as restarts."
++        },
++        {
++          "id": 3,
++          "title": "demo-app memory working set vs limit",
++          "type": "timeseries",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 0,
++            "y": 8,
++            "w": 12,
++            "h": 8
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "sum by (pod) (container_memory_working_set_bytes{pod=~\"demo-app.*\", container!=\"\"})",
++              "legendFormat": "{{pod}} usage",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            },
++            {
++              "refId": "B",
++              "expr": "max by (pod) (kube_pod_container_resource_limits{pod=~\"demo-app.*\", resource=\"memory\"})",
++              "legendFormat": "{{pod}} limit",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {
++              "unit": "bytes"
++            },
++            "overrides": []
++          }
++        },
++        {
++          "id": 4,
++          "title": "demo-app availability (30d)",
++          "type": "stat",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 12,
++            "y": 8,
++            "w": 6,
++            "h": 4
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "slo:demo_app_availability:ratio_30d",
++              "legendFormat": "availability",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {
++              "unit": "percentunit",
++              "thresholds": {
++                "mode": "absolute",
++                "steps": [
++                  {
++                    "color": "red",
++                    "value": null
++                  },
++                  {
++                    "color": "green",
++                    "value": 0.995
++                  }
++                ]
++              }
++            },
++            "overrides": []
++          }
++        },
++        {
++          "id": 5,
++          "title": "Error budget remaining",
++          "type": "stat",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 18,
++            "y": 8,
++            "w": 6,
++            "h": 4
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "slo:demo_app_error_budget:remaining_ratio",
++              "legendFormat": "budget",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {
++              "unit": "percentunit",
++              "thresholds": {
++                "mode": "absolute",
++                "steps": [
++                  {
++                    "color": "red",
++                    "value": null
++                  },
++                  {
++                    "color": "orange",
++                    "value": 0.25
++                  },
++                  {
++                    "color": "green",
++                    "value": 0.5
++                  }
++                ]
++              }
++            },
++            "overrides": []
++          }
++        },
++        {
++          "id": 6,
++          "title": "Burn rate (1h and 6h)",
++          "type": "timeseries",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 12,
++            "y": 12,
++            "w": 12,
++            "h": 4
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "(1 - slo:demo_app_availability:ratio_1h) / (1 - 0.995)",
++              "legendFormat": "1h burn rate",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            },
++            {
++              "refId": "B",
++              "expr": "(1 - slo:demo_app_availability:ratio_6h) / (1 - 0.995)",
++              "legendFormat": "6h burn rate",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {},
++            "overrides": []
++          },
++          "description": "1.0 = spending the budget exactly as fast as the SLO allows. Pages at 14.4 (1h), ticket at 6 (6h)."
++        },
++        {
++          "id": 7,
++          "title": "Probe latency",
++          "type": "timeseries",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 0,
++            "y": 16,
++            "w": 12,
++            "h": 8
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "probe_duration_seconds{service=\"demo-app\"}",
++              "legendFormat": "{{instance}}",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {
++              "unit": "s"
++            },
++            "overrides": []
++          }
++        },
++        {
++          "id": 8,
++          "title": "Nodes",
++          "type": "stat",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 12,
++            "y": 16,
++            "w": 6,
++            "h": 4
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "count(kube_node_info)",
++              "legendFormat": "nodes",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {},
++            "overrides": []
++          },
++          "description": "Managed baseline plus whatever Karpenter has added."
++        },
++        {
++          "id": 9,
++          "title": "Pods not Running",
++          "type": "stat",
++          "datasource": {
++            "type": "prometheus",
++            "uid": "prometheus"
++          },
++          "gridPos": {
++            "x": 18,
++            "y": 16,
++            "w": 6,
++            "h": 4
++          },
++          "targets": [
++            {
++              "refId": "A",
++              "expr": "sum(kube_pod_status_phase{phase=~\"Pending|Failed|Unknown\"})",
++              "legendFormat": "pods",
++              "datasource": {
++                "type": "prometheus",
++                "uid": "prometheus"
++              }
++            }
++          ],
++          "fieldConfig": {
++            "defaults": {
++              "thresholds": {
++                "mode": "absolute",
++                "steps": [
++                  {
++                    "color": "green",
++                    "value": null
++                  },
++                  {
++                    "color": "red",
++                    "value": 1
++                  }
++                ]
++              }
++            },
++            "overrides": []
++          }
++        }
++      ]
++    }
+diff --git a/08-observability/incidents/01-bad-image-tag.md b/08-observability/incidents/01-bad-image-tag.md
+index 1f8e01d..a9e8303 100644
+--- a/08-observability/incidents/01-bad-image-tag.md
++++ b/08-observability/incidents/01-bad-image-tag.md
+@@ -18,5 +18,7 @@ Confirmed a clean rollout — all replicas Running.
+ ## Gap found
+ The Grafana dashboard's pod-restarts panel did **not** catch this failure. `ImagePullBackOff` isn't a container restart — the container never started in the first place — so a restart-count panel is blind to this entire failure class.
+ 
+-## Follow-up (not yet built)
+-Add a panel on `kube_pod_container_status_waiting_reason`, filtered to reasons like `ImagePullBackOff` and `ErrImagePull`, so pull failures show up on the dashboard instead of only in `kubectl describe`.
+\ No newline at end of file
++## Follow-up (built)
++- Dashboard: the *Containers stuck waiting, by reason* panel in `08-observability/dashboards/platform-dashboard.yaml` plots `kube_pod_container_status_waiting_reason`.
++- Alert: `PodImagePullFailure` in `08-observability/alerts/prometheusrule-workload.yaml` fires after three minutes of `ErrImagePull` / `ImagePullBackOff`.
++- Both are covered by promtool unit tests (`08-observability/tests/workload.test.yaml`), including a test showing the restart-based alert stays silent for this failure. Re-running this incident on a live cluster to see the alert fire is still to do.
+diff --git a/08-observability/install/kube-prometheus-stack-values.yaml b/08-observability/install/kube-prometheus-stack-values.yaml
+index 74f180b..dd38c65 100644
+--- a/08-observability/install/kube-prometheus-stack-values.yaml
++++ b/08-observability/install/kube-prometheus-stack-values.yaml
+@@ -1,16 +1,31 @@
+-# Helm values for kube-prometheus-stack, installed into the `monitoring` namespace
+-# helm install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+-#   -n monitoring --create-namespace -f kube-prometheus-stack-values.yaml
++# Values for kube-prometheus-stack. Argo CD installs it via
++# 05-gitops/apps/kube-prometheus-stack.yaml (namespace: monitoring).
+ 
+ grafana:
+   enabled: true
+   defaultDashboardsEnabled: true
+-  adminPassword: "<set-via-secret-not-committed>"
++  # Admin credentials come from a Secret you create once, never from git:
++  #   kubectl -n monitoring create secret generic grafana-admin \
++  #     --from-literal=admin-user=admin --from-literal=admin-password='<choose one>'
++  admin:
++    existingSecret: grafana-admin
++    userKey: admin-user
++    passwordKey: admin-password
++  # Picks up ConfigMaps labelled grafana_dashboard: "1" (see 08-observability/dashboards)
++  sidecar:
++    dashboards:
++      enabled: true
++      label: grafana_dashboard
+ 
+ prometheus:
+   prometheusSpec:
+     retention: 15d
++    # Select ServiceMonitors, PodMonitors, Probes and PrometheusRules from every
++    # namespace, not only the ones carrying this Helm release's label.
+     serviceMonitorSelectorNilUsesHelmValues: false
++    podMonitorSelectorNilUsesHelmValues: false
++    probeSelectorNilUsesHelmValues: false
++    ruleSelectorNilUsesHelmValues: false
+ 
+ alertmanager:
+   enabled: true
+@@ -19,4 +34,4 @@ nodeExporter:
+   enabled: true
+ 
+ kubeStateMetrics:
+-  enabled: true
+\ No newline at end of file
++  enabled: true
+diff --git a/08-observability/slo/probe-demo-app.yaml b/08-observability/slo/probe-demo-app.yaml
+new file mode 100644
+index 0000000..804e8a0
+--- /dev/null
++++ b/08-observability/slo/probe-demo-app.yaml
+@@ -0,0 +1,19 @@
++# Synthetic availability probe for demo-app. Needs the blackbox exporter
++# (05-gitops/apps/blackbox-exporter.yaml) and the Prometheus selectors relaxed in
++# 08-observability/install/kube-prometheus-stack-values.yaml.
++apiVersion: monitoring.coreos.com/v1
++kind: Probe
++metadata:
++  name: demo-app-http
++  namespace: monitoring
++spec:
++  interval: 30s
++  module: http_2xx
++  prober:
++    url: blackbox-exporter.monitoring.svc:9115
++  targets:
++    staticConfig:
++      static:
++        - http://demo-app.default.svc.cluster.local/
++      labels:
++        service: demo-app
+diff --git a/08-observability/slo/prometheusrule-slo.yaml b/08-observability/slo/prometheusrule-slo.yaml
+new file mode 100644
+index 0000000..fb41ab7
+--- /dev/null
++++ b/08-observability/slo/prometheusrule-slo.yaml
+@@ -0,0 +1,57 @@
++# ADR-005: availability SLO for demo-app.
++#   SLI : synthetic probe success (blackbox exporter), probe_success{service="demo-app"}
++#   SLO : 99.5% over 30 days  ->  error budget = 0.5%
++# Burn-rate alerts follow the multiwindow pattern from the Google SRE Workbook:
++#   fast: 14.4x budget burn over 1h and 5m  (2% of the 30-day budget gone in an hour) -> page
++#   slow:  6x   budget burn over 6h and 30m (5% of the budget in six hours)           -> ticket
++# 14.4 x 0.005 = 0.072 and 6 x 0.005 = 0.03 are the error-rate thresholds below.
++apiVersion: monitoring.coreos.com/v1
++kind: PrometheusRule
++metadata:
++  name: demo-app-slo
++  namespace: monitoring
++  labels:
++    app.kubernetes.io/part-of: slo
++spec:
++  groups:
++    - name: demo-app-slo-recording
++      interval: 30s
++      rules:
++        - record: slo:demo_app_availability:ratio_5m
++          expr: avg_over_time(probe_success{service="demo-app"}[5m])
++        - record: slo:demo_app_availability:ratio_30m
++          expr: avg_over_time(probe_success{service="demo-app"}[30m])
++        - record: slo:demo_app_availability:ratio_1h
++          expr: avg_over_time(probe_success{service="demo-app"}[1h])
++        - record: slo:demo_app_availability:ratio_6h
++          expr: avg_over_time(probe_success{service="demo-app"}[6h])
++        - record: slo:demo_app_availability:ratio_30d
++          expr: avg_over_time(probe_success{service="demo-app"}[30d])
++        - record: slo:demo_app_error_budget:remaining_ratio
++          expr: 1 - ((1 - slo:demo_app_availability:ratio_30d) / (1 - 0.995))
++    - name: demo-app-slo-alerts
++      rules:
++        - alert: DemoAppErrorBudgetFastBurn
++          expr: |
++            (1 - slo:demo_app_availability:ratio_1h) > (14.4 * 0.005)
++            and
++            (1 - slo:demo_app_availability:ratio_5m) > (14.4 * 0.005)
++          for: 2m
++          labels:
++            severity: page
++            service: demo-app
++          annotations:
++            summary: demo-app is burning its 30-day error budget 14x too fast
++            description: "{{ $value | humanizePercentage }} of probes failed over the last hour (the 30-day SLO allows 0.5%). Check the demo-app pods and the Probe target first."
++        - alert: DemoAppErrorBudgetSlowBurn
++          expr: |
++            (1 - slo:demo_app_availability:ratio_6h) > (6 * 0.005)
++            and
++            (1 - slo:demo_app_availability:ratio_30m) > (6 * 0.005)
++          for: 15m
++          labels:
++            severity: ticket
++            service: demo-app
++          annotations:
++            summary: demo-app is steadily consuming its error budget
++            description: Sustained partial failures over the last six hours; the 30-day budget will run out early at this rate.
+diff --git a/08-observability/tests/slo.test.yaml b/08-observability/tests/slo.test.yaml
+new file mode 100644
+index 0000000..3bba58d
+--- /dev/null
++++ b/08-observability/tests/slo.test.yaml
+@@ -0,0 +1,52 @@
++rule_files:
++- rules/prometheusrule-slo.rules.yml
++evaluation_interval: 1m
++tests:
++- name: 'fast burn: 15 minute total outage after healthy hour pages'
++  interval: 1m
++  input_series:
++  - series: probe_success{service="demo-app"}
++    values: 1x119 0x14
++  alert_rule_test:
++  - eval_time: 133m
++    alertname: DemoAppErrorBudgetFastBurn
++    exp_alerts:
++    - exp_labels:
++        severity: page
++        service: demo-app
++      exp_annotations:
++        summary: demo-app is burning its 30-day error budget 14x too fast
++        description: 23.33% of probes failed over the last hour (the 30-day SLO allows 0.5%). Check the demo-app pods and the Probe target first.
++  - eval_time: 100m
++    alertname: DemoAppErrorBudgetFastBurn
++    exp_alerts: []
++- name: 'healthy for six hours: nothing fires'
++  interval: 1m
++  input_series:
++  - series: probe_success{service="demo-app"}
++    values: 1x399
++  alert_rule_test:
++  - eval_time: 390m
++    alertname: DemoAppErrorBudgetFastBurn
++    exp_alerts: []
++  - eval_time: 390m
++    alertname: DemoAppErrorBudgetSlowBurn
++    exp_alerts: []
++- name: 'steady 4% failures: slow burn tickets, fast burn stays quiet'
++  interval: 1m
++  input_series:
++  - series: probe_success{service="demo-app"}
++    values: 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0 1x23 0
++  alert_rule_test:
++  - eval_time: 420m
++    alertname: DemoAppErrorBudgetSlowBurn
++    exp_alerts:
++    - exp_labels:
++        severity: ticket
++        service: demo-app
++      exp_annotations:
++        summary: demo-app is steadily consuming its error budget
++        description: Sustained partial failures over the last six hours; the 30-day budget will run out early at this rate.
++  - eval_time: 420m
++    alertname: DemoAppErrorBudgetFastBurn
++    exp_alerts: []
+diff --git a/08-observability/tests/workload.test.yaml b/08-observability/tests/workload.test.yaml
+new file mode 100644
+index 0000000..2ae2274
+--- /dev/null
++++ b/08-observability/tests/workload.test.yaml
+@@ -0,0 +1,55 @@
++rule_files:
++- rules/prometheusrule-workload.rules.yml
++evaluation_interval: 1m
++tests:
++- name: image pull failure alerts after 3 minutes (Incident 01)
++  interval: 1m
++  input_series:
++  - series: kube_pod_container_status_waiting_reason{namespace="default",pod="demo-app-x",container="demo-app",reason="ImagePullBackOff"}
++    values: 1x9
++  - series: kube_pod_container_status_restarts_total{namespace="default",pod="demo-app-x",container="demo-app"}
++    values: '0x9'
++  alert_rule_test:
++  - eval_time: 2m
++    alertname: PodImagePullFailure
++    exp_alerts: []
++  - eval_time: 5m
++    alertname: PodImagePullFailure
++    exp_alerts:
++    - exp_labels:
++        severity: ticket
++        namespace: default
++        pod: demo-app-x
++        container: demo-app
++        reason: ImagePullBackOff
++      exp_annotations:
++        summary: default/demo-app-x cannot pull its image (ImagePullBackOff)
++        description: Check the image tag and registry access. This never shows up as a restart (Incident 01).
++- name: restart-count alone does not see the pull failure, waiting reason does
++  interval: 1m
++  input_series:
++  - series: kube_pod_container_status_restarts_total{namespace="default",pod="demo-app-x",container="demo-app"}
++    values: '0x19'
++  alert_rule_test:
++  - eval_time: 15m
++    alertname: PodCrashLooping
++    exp_alerts: []
++- name: OOMKilled with a fresh restart alerts (Incident 02)
++  interval: 1m
++  input_series:
++  - series: kube_pod_container_status_last_terminated_reason{namespace="default",pod="demo-app-y",container="demo-app",reason="OOMKilled"}
++    values: 1x11
++  - series: kube_pod_container_status_restarts_total{namespace="default",pod="demo-app-y",container="demo-app"}
++    values: 0 0 0 0 0 1 1 1 1 1 1 1
++  alert_rule_test:
++  - eval_time: 8m
++    alertname: PodOOMKilled
++    exp_alerts:
++    - exp_labels:
++        severity: ticket
++        namespace: default
++        pod: demo-app-y
++        container: demo-app
++      exp_annotations:
++        summary: default/demo-app-y was OOMKilled
++        description: Compare the memory working set with the container limit (Incident 02).
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..72f37e1
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,28 @@
++CLUSTER ?= my-eks-cluster
++REGION  ?= ap-south-1
++
++.PHONY: up down kubeconfig pin velero-bucket test fmt
++
++up:            ## create the cluster and AWS resources (costs money while it runs)
++	terraform -chdir=01-foundation init
++	terraform -chdir=01-foundation apply
++
++down:          ## destroy everything Terraform created
++	terraform -chdir=01-foundation destroy
++
++kubeconfig:
++	aws eks update-kubeconfig --name $(CLUSTER) --region $(REGION)
++
++pin:           ## resolve PIN_LATEST chart versions in 05-gitops/apps (needs helm)
++	./scripts/pin_charts.py
++
++velero-bucket: ## write the Terraform-created bucket name into the Velero values
++	./scripts/set-velero-bucket.sh
++
++test:          ## run the local checks that CI runs (needs kyverno, promtool, kubeconform)
++	terraform fmt -check -recursive 01-foundation
++	./07-policy/run-tests.sh
++	./scripts/test-prometheus-rules.sh
++
++fmt:
++	terraform fmt -recursive 01-foundation
+diff --git a/README.md b/README.md
+index 3710682..f18073a 100644
+--- a/README.md
++++ b/README.md
+@@ -1,66 +1,101 @@
+ # EKS Production-Style Platform
+ 
+-A hands-on platform engineering project on Amazon EKS: provisioning, node autoscaling, GitOps delivery, secrets management, admission policy, and observability. Each module was built and run on a live cluster, and the trade-offs behind each choice are written down as ADRs.
+-
+-> **Honest status:** this repo is a working lab, not a one-command production platform. The table below says what is implemented, what is partial, and what is only proposed. Known gaps are listed explicitly.
++[![ci](https://github.com/mansuralamkhan/eks-setup/actions/workflows/ci.yml/badge.svg)](https://github.com/mansuralamkhan/eks-setup/actions/workflows/ci.yml)
++
++A hands-on platform engineering project on Amazon EKS: provisioning, node autoscaling, GitOps delivery, secrets management, admission policy, supply-chain security, SLOs and observability, and backups. Each module was built and run on a live cluster where noted, and the trade-offs behind every choice are written down as ADRs in [`docs/adr/`](docs/adr).
++
++> **Status:** a working lab, not a one-command production platform. The tables below say what is implemented, what is tested only offline, and what is still manual. Anything marked *pending live run* has unit or schema tests but has not yet been exercised on a cluster.
++
++## Architecture
++
++```mermaid
++flowchart LR
++  subgraph AWS
++    VPC[3-AZ VPC<br/>single NAT] --> EKS[EKS cluster<br/>managed node group]
++    S3[(S3 bucket<br/>Velero backups)]
++  end
++  Git[(Git: this repo)] -->|app-of-apps| Argo[Argo CD]
++  Argo --> Karp[Karpenter]
++  Argo --> Kyv[Kyverno + policies]
++  Argo --> Prom[kube-prometheus-stack<br/>+ blackbox probe]
++  Argo --> Vel[Velero]
++  Karp -->|scales nodes| EKS
++  Vel -->|resource backups| S3
++  CI[GitHub Actions] -->|build, sign, attest| GHCR[(GHCR image)]
++  GHCR -->|signature checked at admission| Kyv
++  Prom -->|SLO burn-rate alerts| AM[Alertmanager]
++```
+ 
+ ## Modules
+ 
+ | Folder | What it contains | Status |
+ |---|---|---|
+-| `01-foundation/` | Terraform: 3-AZ VPC (single NAT gateway), EKS cluster (KMS secret encryption, control-plane logs, restricted public API endpoint), managed node group, VPC CNI, OIDC provider, Karpenter and ALB-controller IAM, Pod Identity | Implemented |
++| `01-foundation/` | Terraform: 3-AZ VPC (single NAT gateway), EKS (KMS secret encryption, control-plane logs, API endpoint restricted to your CIDR), managed node group (IMDSv2, encrypted volumes), OIDC provider, Karpenter and ALB-controller IAM, Pod Identity, Karpenter discovery tags, Velero bucket and role | Implemented (live-tested before the latest changes; re-apply pending) |
+ | `02-autoscaling/` | Karpenter `EC2NodeClass` + `NodePool` | Implemented |
+-| `04-service-mesh/` | Istio gateway, `VirtualService` (90/10 canary between v1 and v2), `DestinationRule`, two demo deployments | Lab (see known gaps) |
+-| `05-gitops/` | Argo CD app-of-apps: root app plus three children (AWS Load Balancer Controller, Karpenter, demo-app) | Implemented, partial coverage |
+-| `06-secrets/` | External Secrets Operator: `ClusterSecretStore`, `ExternalSecret`, IRSA trust-policy template | Implemented (IAM role created by hand) |
+-| `07-policy/` | Kyverno `disallow-latest-tag` policy in Audit mode, with passing and violating test pods | Implemented (Audit only) |
+-| `08-observability/` | kube-prometheus-stack Helm values, CloudWatch Container Insights reference, demo-app, two incident write-ups | Implemented (no dashboard JSON yet) |
+-| `docs/adr/` | Ten Architecture Decision Records, each with a `Status:` line | See below |
+-
+-There is no `03-` folder. The AWS Load Balancer Controller's IAM role lives in `01-foundation/modules/eks`, and its Helm release is an Argo CD app in `05-gitops/apps`.
++| `04-service-mesh/` | Istio gateway, 90/10 canary `VirtualService`, `DestinationRule`, `Service`, demo deployments | Lab |
++| `05-gitops/` | Argo CD app-of-apps: ALB controller, Karpenter, demo-app, kube-prometheus-stack, blackbox exporter, Kyverno, Kyverno policies, observability config, Velero | Implemented, pending live sync |
++| `06-secrets/` | External Secrets Operator `ClusterSecretStore` and `ExternalSecret`, IRSA trust-policy template | Implemented (ESO install and IAM role are manual) |
++| `07-policy/` | Kyverno `disallow-latest-tag` and `verify-image-signatures` (both Audit), with offline tests | Implemented, signature check pending live run |
++| `08-observability/` | Prometheus values, Grafana dashboard, availability SLO and burn-rate alerts, workload alerts, promtool tests, incident write-ups | Implemented, pending live fire drill |
++| `app/demo-app/` | Small image built, signed and attested in CI | Implemented, pending first CI run |
++| `docs/` | 10 ADRs, SLO definition, runbooks (image signing, restore drill) | |
+ 
+-## Decisions and trade-offs
++There is no `03-` folder. The ALB controller's IAM role is in `01-foundation/modules/eks` and its Helm release is an Argo CD app.
+ 
+-Every non-obvious choice is an ADR in `docs/adr/`, including the alternatives I rejected. Implementation status per ADR:
++## Decisions
+ 
+ | ADR | Decision | Status |
+ |---|---|---|
+ | 0001 | Karpenter over Cluster Autoscaler | Implemented |
+-| 0002 | Kyverno rollout: Audit first, then Enforce | Implemented in Audit |
+-| 0003 | Argo CD app-of-apps | Implemented, partial coverage |
+-| 0004 | External Secrets Operator with IRSA | Implemented |
+-| 0005 | SLOs and error budgets | **Proposed** |
+-| 0006 | Terraform as the only IaC tool | Partial (no remote state or CI yet) |
++| 0002 | Kyverno: Audit first, then Enforce | Implemented in Audit |
++| 0003 | Argo CD app-of-apps | Implemented (ESO still manual) |
++| 0004 | External Secrets Operator | Implemented (install and IAM manual) |
++| 0005 | SLOs and error budgets | Implemented, unit-tested |
++| 0006 | Terraform as the only IaC tool | Partial (no remote state yet) |
+ | 0007 | Prometheus/Grafana plus CloudWatch Container Insights | Implemented |
+-| 0008 | Cosign + SLSA image signing, verified by Kyverno | **Proposed** |
+-| 0009 | Multi-AZ plus Velero backups | Partial (multi-AZ networking only) |
++| 0008 | Cosign + SLSA, verified by Kyverno | Implemented in Audit, pending first run |
++| 0009 | Multi-AZ plus Velero | Partial (resource backups only, no restore drill yet) |
+ | 0010 | Node access through SSM Session Manager | Implemented |
+ 
++## Continuous integration
++
++`ci.yml` runs on every push and pull request: `terraform fmt`/`validate`, `kubeconform` (core resources plus Karpenter, Argo CD, Kyverno, Prometheus Operator and Istio CRDs), Kyverno policy tests, `promtool` rule linting and unit tests (including every dashboard query), `gitleaks`, and a check that no `PIN_LATEST` or `REPLACE_VELERO_BUCKET` placeholder is left in `05-gitops`. `image.yml` builds, signs and attests the demo image.
++
+ ## Real incidents
+ 
+-`08-observability/incidents/` documents two failures triggered on this cluster. The bad-image-tag incident exposed a real dashboard gap: a restart-count panel can't see `ImagePullBackOff`, because the container never started. The follow-up panel is described in the write-up and is not built yet.
++`08-observability/incidents/` documents two failures triggered on this cluster. Incident 01 (bad image tag) exposed that a restart-count panel cannot see `ImagePullBackOff`. The fix, a *waiting reason* panel and the `PodImagePullFailure` alert, is built and unit-tested; re-running the incident to watch it fire is still to do. Incident 02 (OOMKilled) still needs its original numbers recorded.
+ 
+-## Known gaps
++## Quickstart
++
++Prerequisites: AWS credentials, Terraform, `kubectl`, Helm, `make`.
+ 
+-These are tracked and will be closed or reflected in the ADR statuses:
++```bash
++cp 01-foundation/terraform.tfvars.example 01-foundation/terraform.tfvars   # set public_access_cidrs to your IP/32
++make up                    # terraform init + apply
++make kubeconfig
++make velero-bucket         # writes the bucket name into the Velero values
++make pin                   # resolves chart versions into the Argo apps; review the diff
++git add -A && git commit -m "chore: pin charts, set velero bucket" && git push
++```
+ 
+-- **Karpenter discovery tags** (`karpenter.sh/discovery`) are not set by Terraform. The `EC2NodeClass` depends on them, so they are applied by hand today.
+-- **Karpenter Argo app** has no Helm values (for example `settings.clusterName`).
+-- **Karpenter controller IAM policy** should be compared with the official Karpenter v1 policy.
+-- **`04-service-mesh/`** has no `Service` manifest for `demo-app`.
+-- **Only part of the platform is managed by Argo CD.** External Secrets, Kyverno, kube-prometheus-stack and Istio are installed outside GitOps, and their install steps are not captured in this repo yet.
+-- **No CI and no remote Terraform state.**
+-- **Single NAT gateway** and a one-node managed baseline: the network is multi-AZ, egress and baseline capacity are not (see ADR-0009).
+-- **Cluster API endpoint CIDR** is hard-coded in `01-foundation/modules/eks/main.tf`. Change `public_access_cidrs` to your own address before applying.
++Then install Argo CD, create the Grafana admin secret (command in `08-observability/install/kube-prometheus-stack-values.yaml`), and apply the root app:
+ 
+-## Setup
++```bash
++kubectl apply -f 05-gitops/apps/root-app.yaml
++kubectl apply -f 02-autoscaling/      # once Karpenter is running
++```
+ 
+-Prerequisites: AWS account and credentials, Terraform, `kubectl`, Helm.
++If you previously installed Kyverno, kube-prometheus-stack or Velero by hand with Helm, uninstall those releases first (or use a fresh cluster) so Argo CD owns them.
+ 
+-1. **Foundation:** in `01-foundation/`, set `public_access_cidrs` for your IP, then `terraform init && terraform apply`.
+-2. **Kubeconfig:** `aws eks update-kubeconfig --name my-eks-cluster --region ap-south-1`.
+-3. **Argo CD:** install it, then `kubectl apply -f 05-gitops/apps/root-app.yaml`. Edit `repoURL` in the app manifests if you fork this repo.
+-4. **Autoscaling:** once Karpenter is running, tag the private subnets and the cluster security group with `karpenter.sh/discovery: my-eks-cluster`, then apply `02-autoscaling/`.
+-5. **Other modules:** `06-secrets/`, `07-policy/`, `08-observability/` and `04-service-mesh/` assume the cluster exists. Replace the `<ACCOUNT_ID>` and `<OIDC_PROVIDER>` placeholders first.
++**Cost warning:** the EKS control plane and the NAT gateway bill continuously. Run `make down` when you finish a session.
++
++## Known gaps
+ 
+-**Cost warning:** the EKS control plane and the NAT gateway bill continuously. Run `terraform destroy` when you finish a session.
++- **External Secrets Operator** is installed by hand and its IAM role is not in Terraform.
++- **No remote Terraform state** and no PR-gated `plan` (ADR-0006).
++- **Single NAT gateway** and a one-node managed baseline: the network is multi-AZ, egress and baseline capacity are not (ADR-0009).
++- **IMDS hop limit is 2** so the ALB controller can discover the VPC; set `vpcId` in its Helm values and lower it to 1 to tighten this.
++- **`al2023@latest`** in the `EC2NodeClass` drifts; pin it for reproducible nodes.
++- **The `kubernetes` provider is configured inside the `eks` module.** Moving it to the root needs a state migration.
++- **Velero covers resources, not volume data.** No stateful workloads need snapshots yet.
++- **Signing and verification are untested live.** Image signature verification and the SLO alerts have offline tests only.
+diff --git a/app/demo-app/Dockerfile b/app/demo-app/Dockerfile
+new file mode 100644
+index 0000000..b176e98
+--- /dev/null
++++ b/app/demo-app/Dockerfile
+@@ -0,0 +1,5 @@
++# Tiny static demo image. It exists so CI has something real to build, sign and
++# attest, and so Kyverno has a real signed image to verify (ADR-008).
++FROM nginxinc/nginx-unprivileged:1.27-alpine
++COPY index.html /usr/share/nginx/html/index.html
++EXPOSE 8080
+diff --git a/app/demo-app/index.html b/app/demo-app/index.html
+new file mode 100644
+index 0000000..9572a75
+--- /dev/null
++++ b/app/demo-app/index.html
+@@ -0,0 +1,3 @@
++<!doctype html>
++<html lang="en"><head><meta charset="utf-8"><title>demo-app</title></head>
++<body><h1>demo-app</h1><p>Built, signed and attested by GitHub Actions.</p></body></html>
+diff --git a/docs/adr/0003-ArgoCD-apps-of-apps.md b/docs/adr/0003-ArgoCD-apps-of-apps.md
+index 7d84883..c526c2b 100644
+--- a/docs/adr/0003-ArgoCD-apps-of-apps.md
++++ b/docs/adr/0003-ArgoCD-apps-of-apps.md
+@@ -1,6 +1,6 @@
+ ADR-003: GitOps Deployment Pattern — Argo CD App-of-Apps
+ 
+-**Status:** Accepted · Implemented (`05-gitops`). Only some platform components are child apps so far.
++**Status:** Accepted · Implemented (`05-gitops`). Child apps: ALB controller, Karpenter, kube-prometheus-stack, blackbox exporter, Kyverno and its policies, observability config, Velero. External Secrets is still installed by hand.
+ 
+ Context: As the number of services on the platform grows, managing each as an individually registered Argo CD Application doesn't scale operationally — every new service requires manual onboarding, and there's no single place to see or reason about the platform's full application inventory. The platform needs a pattern that lets new services be added declaratively and gives one entry point for platform-wide state.
+ 
+diff --git a/docs/adr/0004-Secret_management-external-secrets.md b/docs/adr/0004-Secret_management-external-secrets.md
+index 422404d..389eb43 100644
+--- a/docs/adr/0004-Secret_management-external-secrets.md
++++ b/docs/adr/0004-Secret_management-external-secrets.md
+@@ -1,6 +1,6 @@
+ **ADR-004: Secrets Management — External Secrets Operator**
+ 
+-**Status:** Accepted · Implemented (`06-secrets`). The ESO install and its IAM role are not yet in Terraform or GitOps.
++**Status:** Accepted · Implemented (`06-secrets`). The ESO install and its IAM role are still manual (not in Terraform or GitOps).
+ 
+ **Context:** Application manifests previously contained hardcoded or manually added credentials. This could cause differences between what is stored in Git and what is running in the cluster, and made secret rotation manual and error-prone. The platform needs secrets to come from a managed store and be synced automatically, while keeping sensitive values out of Git.
+ 
+diff --git a/docs/adr/0005-SLOs-error-budgets.md b/docs/adr/0005-SLOs-error-budgets.md
+index 5a16380..4403bf8 100644
+--- a/docs/adr/0005-SLOs-error-budgets.md
++++ b/docs/adr/0005-SLOs-error-budgets.md
+@@ -1,6 +1,6 @@
+ **ADR-005: Reliability Targets — SLOs and Error Budgets**
+ 
+-**Status:** Proposed · No code yet.
++**Status:** Accepted · Implemented (`08-observability/slo`, unit-tested with promtool). A live fire drill has not been recorded yet.
+ 
+ **Context:** The platform has dashboards for pod health, node resource usage, and ALB errors, but there are no clear limits for what is considered "acceptable." This makes it difficult to decide when a change is too risky or when on-call should be alerted. The platform needs clear and measurable reliability targets based on user impact, not just infrastructure metrics.
+ 
+diff --git a/docs/adr/0006-terraform.md b/docs/adr/0006-terraform.md
+index ff4e234..e47d102 100644
+--- a/docs/adr/0006-terraform.md
++++ b/docs/adr/0006-terraform.md
+@@ -1,6 +1,6 @@
+ ADR-006: Infrastructure as Code Tool — Terraform
+ 
+-**Status:** Accepted · Partially implemented (modules and provider lock file). Remote state and PR-gated plans are not in place yet.
++**Status:** Accepted · Partially implemented (modules, provider lock file, CI `fmt`/`validate`). Remote state and PR-gated `plan` output are not in place yet.
+ 
+ Context: The platform's foundational infrastructure (VPC, EKS cluster, node groups, IRSA roles) needs to be provisioned reproducibly across environments, with changes reviewable before they hit real infrastructure, and without manual console drift accumulating over time.
+ 
+diff --git a/docs/adr/0007-observability-stack.md b/docs/adr/0007-observability-stack.md
+index 4e92d27..93e4c58 100644
+--- a/docs/adr/0007-observability-stack.md
++++ b/docs/adr/0007-observability-stack.md
+@@ -1,6 +1,6 @@
+ ADR-007: Observability Stack — Prometheus/Grafana + CloudWatch Container Insights
+ 
+-**Status:** Accepted · Implemented (`08-observability/install`). Grafana dashboard JSON is not committed yet.
++**Status:** Accepted · Implemented (`08-observability/install`, dashboard ConfigMap, workload alerts).
+ 
+ Context: The platform needs visibility into pod health, node resource usage, and ALB-level errors, but no single tool covers both deep Kubernetes-native metrics and AWS-managed infrastructure metrics (like ALB 5xx counts) equally well. Running two disconnected tools risks fragmented dashboards and slower incident diagnosis.
+ 
+diff --git a/docs/adr/0008-container-supply-chain-security.md b/docs/adr/0008-container-supply-chain-security.md
+index 047c494..d7cc808 100644
+--- a/docs/adr/0008-container-supply-chain-security.md
++++ b/docs/adr/0008-container-supply-chain-security.md
+@@ -1,6 +1,6 @@
+ ADR-008: Container Supply Chain Security — Cosign + SLSA
+ 
+-**Status:** Proposed · No code yet.
++**Status:** Accepted · Implemented in Audit mode (`.github/workflows/image.yml`, `07-policy/policies/verify-image-signatures.yaml`). First signed-image run, live verification and the Enforce cutover are pending.
+ 
+ Context: Container images built in CI were previously deployed without any verification that they came from the expected build pipeline, meaning a compromised registry or a manually pushed image could reach production undetected.
+ 
+diff --git a/docs/adr/0009-multi-az-eks-set-up.md b/docs/adr/0009-multi-az-eks-set-up.md
+index e274a41..eeb99cb 100644
+--- a/docs/adr/0009-multi-az-eks-set-up.md
++++ b/docs/adr/0009-multi-az-eks-set-up.md
+@@ -1,6 +1,6 @@
+ ADR-009: Disaster Recovery — Multi-AZ EKS with Velero Backups
+ 
+-**Status:** Accepted · Partially implemented. Multi-AZ subnets and node placement exist in `01-foundation` (single NAT gateway, one-node baseline). Velero backups and restore drills are Proposed.
++**Status:** Accepted · Partially implemented. Multi-AZ subnets and node placement exist in `01-foundation` (single NAT gateway, one-node baseline). Velero resource backups are defined (`01-foundation/velero.tf`, `05-gitops/apps/velero.yaml`); the first restore drill has not been run.
+ 
+ Context: The platform's initial single-AZ design left it exposed to a full outage from a single AZ failure, and there was no tested mechanism to recover cluster state (workloads, PVs, config) if the cluster itself were lost or corrupted.
+ 
+@@ -28,4 +28,8 @@ AZ-independent.
+ 
+ A production deployment with a requirement for AZ-independent egress should
+ use one NAT Gateway per AZ or another highly available egress architecture.
+-\
+\ No newline at end of file
++\
++
++### Scope today
++
++Velero backs up Kubernetes **resources** (manifests, CRDs, config) on a daily schedule with a 72-hour TTL. Persistent volume snapshots are disabled because the cluster has no stateful workloads yet. The restore procedure and a table for drill timings are in `docs/runbooks/restore-drill.md`.
+diff --git a/docs/runbooks/restore-drill.md b/docs/runbooks/restore-drill.md
+new file mode 100644
+index 0000000..acf0b01
+--- /dev/null
++++ b/docs/runbooks/restore-drill.md
+@@ -0,0 +1,46 @@
++# Runbook: Velero restore drill (ADR-009)
++
++An untested backup is not a real backup. Run this once now and then quarterly.
++Prerequisites: `brew install velero`, cluster running, Argo CD has synced the `velero` app.
++
++## 1. Namespace-level drill (about 10 minutes)
++
++```bash
++# create something to lose
++kubectl create namespace drill
++kubectl -n drill create configmap marker --from-literal=created=$(date -u +%FT%TZ)
++kubectl -n drill create deployment web --image=nginx:1.27-alpine
++
++# back it up
++velero backup create drill-$(date +%Y%m%d%H%M) --include-namespaces drill --snapshot-volumes=false --wait
++velero backup get          # Phase should be Completed
++
++# lose it
++kubectl delete namespace drill
++
++# restore it
++velero restore create --from-backup <backup-name-from-above> --wait
++kubectl -n drill get configmap marker deployment web    # both must be back
++```
++
++## 2. Cluster-loss drill (about 45 minutes, quarterly)
++
++1. Let the scheduled backup run (`velero schedule get`), or take an on-demand one.
++2. `terraform destroy` the cluster **without** emptying the bucket (remove `force_destroy` first
++   if you do this for real, so backups survive the destroy).
++3. `terraform apply` a new cluster, let Argo CD sync, and make sure Velero sees the existing bucket
++   (`velero backup get`).
++4. `velero restore create --from-backup <latest> --exclude-namespaces kube-system,velero,argocd --wait`
++5. Check the demo workloads came back.
++
++## What is and is not covered
++
++Covered: Kubernetes objects (Deployments, Services, ConfigMaps, CRDs and their instances).
++Not covered: persistent volume data (snapshots are disabled), Secrets' external sources
++(those live in AWS Secrets Manager), and AWS resources created by Terraform (rebuild with `terraform apply`).
++
++## Drill log (fill in after each run)
++
++| Date | Type | Backup size / duration | Restore duration | Result | Notes |
++|---|---|---|---|---|---|
++| _not run yet_ | | | | | |
+diff --git a/docs/runbooks/verify-image-signatures.md b/docs/runbooks/verify-image-signatures.md
+new file mode 100644
+index 0000000..b8a50e5
+--- /dev/null
++++ b/docs/runbooks/verify-image-signatures.md
+@@ -0,0 +1,51 @@
++# Runbook: image signing and verification (ADR-008)
++
++## How it works
++
++1. `.github/workflows/image.yml` builds `app/demo-app`, pushes it to
++   `ghcr.io/<owner>/eks-setup/demo-app`, signs the digest with Cosign **keyless**
++   (GitHub OIDC identity, recorded in the Rekor transparency log) and attaches SLSA
++   build provenance.
++2. `07-policy/policies/verify-image-signatures.yaml` makes Kyverno check that any image
++   from that namespace was signed by exactly that workflow on `main`.
++
++## One-time setup
++
++- Run the `image` workflow once (push a change under `app/` or use *Run workflow*).
++- In GitHub, set the package `eks-setup/demo-app` to **public** (Packages, then Package
++  settings). The cluster needs to pull it, and Kyverno needs to read its signature.
++
++## Verify from your laptop
++
++```bash
++IMAGE=ghcr.io/mansuralamkhan/eks-setup/demo-app
++DIGEST=$(docker buildx imagetools inspect $IMAGE:latest --format '{{json .Manifest.Digest}}' | tr -d '"')
++cosign verify "$IMAGE@$DIGEST" \
++  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
++  --certificate-identity https://github.com/mansuralamkhan/eks-setup/.github/workflows/image.yml@refs/heads/main
++```
++
++## Verify in the cluster (Audit mode)
++
++```bash
++# signed image: no policy violation expected
++kubectl run signed --image=$IMAGE@$DIGEST --restart=Never
++# unsigned image in the same registry namespace: push anything there by hand
++docker pull nginx:1.27-alpine && docker tag nginx:1.27-alpine ghcr.io/mansuralamkhan/eks-setup/unsigned-test:v1
++docker push ghcr.io/mansuralamkhan/eks-setup/unsigned-test:v1
++kubectl run unsigned --image=ghcr.io/mansuralamkhan/eks-setup/unsigned-test:v1 --restart=Never
++kubectl get policyreport -A | grep -i verify    # the unsigned pod should be listed as a failure
++```
++
++## Moving to Enforce
++
++Same rule as ADR-002: only after two weeks of clean reports. Change
++`validationFailureAction` to `Enforce` and `mutateDigest` to `true`, and make sure every
++image from the namespace is signed first.
++
++## "Key rotation" with keyless signing
++
++There are no long-lived keys to rotate (ADR-008 listed that as a risk). The trust anchor
++is the workflow identity in the policy's `subject`. If you rename the workflow file,
++change branches or move the repo, **update the policy in the same pull request**,
++otherwise verification fails for new images.
+diff --git a/docs/slo.md b/docs/slo.md
+new file mode 100644
+index 0000000..9e9becb
+--- /dev/null
++++ b/docs/slo.md
+@@ -0,0 +1,33 @@
++# SLO: demo-app availability (ADR-005)
++
++| | |
++|---|---|
++| SLI | Fraction of successful synthetic probes (`probe_success{service="demo-app"}`, every 30s, blackbox exporter, HTTP 2xx) |
++| SLO | 99.5% over a rolling 30 days |
++| Error budget | 0.5%, which is 216 minutes of full outage per 30 days |
++
++## Alerts (`08-observability/slo/prometheusrule-slo.yaml`)
++
++| Alert | Fires when | Meaning | Severity |
++|---|---|---|---|
++| `DemoAppErrorBudgetFastBurn` | error rate over 1h **and** 5m above 7.2% | 14.4x burn: 2% of the 30-day budget is spent in an hour | page |
++| `DemoAppErrorBudgetSlowBurn` | error rate over 6h **and** 30m above 3% | 6x burn: 5% of the budget is spent in six hours | ticket |
++
++The short window in each pair makes the alert reset quickly once the problem is fixed.
++
++## Tests
++
++`scripts/test-prometheus-rules.sh` runs `promtool check rules` and the unit tests in `08-observability/tests/`:
++a 15-minute outage pages, a healthy service stays silent, and a steady 4% failure rate raises the slow-burn ticket without paging.
++
++## Live fire drill (record the result here)
++
++```bash
++kubectl scale deploy demo-app --replicas=0      # total outage
++# Prometheus: probe_success drops to 0; DemoAppErrorBudgetFastBurn should fire in about 7 minutes
++kubectl scale deploy demo-app --replicas=2      # restore
++```
++
++| Date | Outage started | Alert fired | Time to fire |
++|---|---|---|---|
++| _not run yet_ | | | |
+diff --git a/scripts/pin_charts.py b/scripts/pin_charts.py
+new file mode 100755
+index 0000000..56a8737
+--- /dev/null
++++ b/scripts/pin_charts.py
+@@ -0,0 +1,55 @@
++#!/usr/bin/env python3
++"""Replace `targetRevision: PIN_LATEST` in Argo CD apps with the latest published chart version.
++
++Reads the nearest preceding `repoURL:` and `chart:` lines of each marker and asks Helm:
++    helm show chart <chart> --repo <repoURL>
++Run it on your machine (needs helm and network), review the diff, commit.
++Use --list to only print what would change.
++"""
++import pathlib
++import re
++import subprocess
++import sys
++
++APPS = pathlib.Path(__file__).resolve().parent.parent / "05-gitops" / "apps"
++MARK = "PIN_LATEST"
++
++
++def latest_version(chart: str, repo: str) -> str:
++    out = subprocess.run(
++        ["helm", "show", "chart", chart, "--repo", repo],
++        check=True, capture_output=True, text=True,
++    ).stdout
++    m = re.search(r"^version:\s*(\S+)", out, re.M)
++    if not m:
++        raise SystemExit(f"could not read version for {chart} from {repo}")
++    return m.group(1)
++
++
++def main() -> int:
++    dry = "--list" in sys.argv
++    changed = 0
++    for path in sorted(APPS.glob("*.yaml")):
++        lines = path.read_text().split("\n")
++        repo = chart = None
++        for i, line in enumerate(lines):
++            if m := re.search(r"repoURL:\s*(\S+)", line):
++                repo, chart = m.group(1), None
++            elif m := re.search(r"\bchart:\s*(\S+)", line):
++                chart = m.group(1)
++            if MARK in line and "targetRevision:" in line:
++                if not (repo and chart):
++                    raise SystemExit(f"{path.name}: {MARK} without repoURL/chart above it")
++                version = latest_version(chart, repo)
++                print(f"{path.name}: {chart} -> {version}")
++                if not dry:
++                    lines[i] = line.replace(MARK, version)
++                    changed += 1
++        if not dry:
++            path.write_text("\n".join(lines))
++    print(f"{'would update' if dry else 'updated'} {changed} marker(s)")
++    return 0
++
++
++if __name__ == "__main__":
++    sys.exit(main())
+diff --git a/scripts/set-velero-bucket.sh b/scripts/set-velero-bucket.sh
+new file mode 100755
+index 0000000..f41a4a2
+--- /dev/null
++++ b/scripts/set-velero-bucket.sh
+@@ -0,0 +1,9 @@
++#!/usr/bin/env bash
++# Writes the Terraform-created Velero bucket name into the Velero Helm values.
++set -euo pipefail
++cd "$(dirname "$0")/.."
++bucket=$(terraform -chdir=01-foundation output -raw velero_bucket)
++f=05-gitops/values/velero-values.yaml
++grep -q REPLACE_VELERO_BUCKET "$f" || { echo "bucket already set in $f"; exit 0; }
++sed -i.bak "s/REPLACE_VELERO_BUCKET/${bucket}/" "$f" && rm -f "$f.bak"
++echo "set bucket to ${bucket} in $f"
+diff --git a/scripts/test-prometheus-rules.sh b/scripts/test-prometheus-rules.sh
+new file mode 100755
+index 0000000..48fc0e4
+--- /dev/null
++++ b/scripts/test-prometheus-rules.sh
+@@ -0,0 +1,29 @@
++#!/usr/bin/env bash
++# Lints every PrometheusRule under 08-observability and runs the promtool unit tests in
++# 08-observability/tests. Needs: promtool, python3 with PyYAML.
++set -euo pipefail
++cd "$(dirname "$0")/.."
++tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
++mkdir -p "$tmp/rules"
++for f in 08-observability/slo/prometheusrule-*.yaml 08-observability/alerts/prometheusrule-*.yaml; do
++  out="$tmp/rules/$(basename "$f" .yaml).rules.yml"
++  python3 - "$f" > "$out" <<'PY'
++import sys, yaml
++print(yaml.safe_dump(yaml.safe_load(open(sys.argv[1]))["spec"]))
++PY
++  promtool check rules --lint-fatal "$out"
++done
++# dashboard expressions must at least parse as PromQL
++if [ -f 08-observability/dashboards/platform-dashboard.yaml ]; then
++python3 - > "$tmp/rules/dashboard-exprs.rules.yml" <<'PY'
++import yaml, json
++cm = yaml.safe_load(open("08-observability/dashboards/platform-dashboard.yaml"))
++dash = json.loads(cm["data"]["platform-overview.json"])
++exprs = [t["expr"] for p in dash["panels"] for t in p.get("targets", [])]
++rules = [{"record": f"dash:expr{i}", "expr": e} for i, e in enumerate(exprs)]
++print(yaml.safe_dump({"groups": [{"name": "dashboard", "rules": rules}]}))
++PY
++promtool check rules --lint-fatal "$tmp/rules/dashboard-exprs.rules.yml"
++fi
++cp 08-observability/tests/*.test.yaml "$tmp/"
++( cd "$tmp" && promtool test rules *.test.yaml )

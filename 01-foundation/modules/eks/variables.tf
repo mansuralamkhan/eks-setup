@@ -51,3 +51,13 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "public_access_cidrs" {
+  description = "CIDR blocks allowed to reach the public EKS API endpoint"
+  type        = list(string)
+
+  validation {
+    condition     = length(var.public_access_cidrs) > 0
+    error_message = "Set at least one CIDR, for example [\"203.0.113.10/32\"]."
+  }
+}

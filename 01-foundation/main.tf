@@ -36,5 +36,6 @@ module "eks" {
   managed_node_min_size       = var.managed_node_min_size
   managed_node_max_size       = var.managed_node_max_size
   managed_node_desired_size   = var.managed_node_desired_size
-  tags = var.tags
+  public_access_cidrs         = var.public_access_cidrs
+  tags                        = var.tags
 }
