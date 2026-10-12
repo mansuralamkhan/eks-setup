@@ -22,10 +22,12 @@ a 15-minute outage pages, a healthy service stays silent, and a steady 4% failur
 
 ## Live fire drill (record the result here)
 
+Wait about 15 minutes after the `slo-demo` app is healthy so the probe has history, then:
+
 ```bash
-kubectl scale deploy demo-app --replicas=0      # total outage
-# Prometheus: probe_success drops to 0; DemoAppErrorBudgetFastBurn should fire in about 7 minutes
-kubectl scale deploy demo-app --replicas=2      # restore
+kubectl -n slo-demo scale deploy demo-app --replicas=0      # total outage; note the time
+# Prometheus (port-forward 9090) -> Alerts: DemoAppErrorBudgetFastBurn goes Pending, then Firing after about 7 minutes
+kubectl -n slo-demo scale deploy demo-app --replicas=2      # restore
 ```
 
 | Date | Outage started | Alert fired | Time to fire |

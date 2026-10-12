@@ -1,6 +1,6 @@
-# Synthetic availability probe for demo-app. Needs the blackbox exporter
-# (05-gitops/apps/blackbox-exporter.yaml) and the Prometheus selectors relaxed in
-# 08-observability/install/kube-prometheus-stack-values.yaml.
+# Synthetic availability probe for demo-app (the workload in 05-gitops/manifests/slo-demo,
+# namespace slo-demo). Needs the blackbox exporter (05-gitops/apps/blackbox-exporter.yaml)
+# and the Prometheus selectors relaxed in 08-observability/install/kube-prometheus-stack-values.yaml.
 apiVersion: monitoring.coreos.com/v1
 kind: Probe
 metadata:
@@ -14,6 +14,6 @@ spec:
   targets:
     staticConfig:
       static:
-        - http://demo-app.default.svc.cluster.local/
+        - http://demo-app.slo-demo.svc.cluster.local/
       labels:
         service: demo-app

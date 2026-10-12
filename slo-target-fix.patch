@@ -1,0 +1,166 @@
+diff --git a/05-gitops/apps/slo-demo.yaml b/05-gitops/apps/slo-demo.yaml
+new file mode 100644
+index 0000000..e43df1c
+--- /dev/null
++++ b/05-gitops/apps/slo-demo.yaml
+@@ -0,0 +1,31 @@
++apiVersion: argoproj.io/v1alpha1
++kind: Application
++metadata:
++  name: slo-demo
++  namespace: argocd
++  annotations:
++    argocd.argoproj.io/sync-wave: "1"
++spec:
++  project: default
++  source:
++    repoURL: https://github.com/mansuralamkhan/eks-setup.git
++    targetRevision: main
++    path: 05-gitops/manifests/slo-demo
++  destination:
++    server: https://kubernetes.default.svc
++    namespace: slo-demo
++  # Lets you run the SLO fire drill (`kubectl scale ... --replicas=0`) without Argo CD
++  # immediately putting the replicas back.
++  ignoreDifferences:
++    - group: apps
++      kind: Deployment
++      name: demo-app
++      jsonPointers:
++        - /spec/replicas
++  syncPolicy:
++    automated:
++      prune: true
++      selfHeal: true
++    syncOptions:
++      - CreateNamespace=true
++      - RespectIgnoreDifferences=true
+diff --git a/05-gitops/manifests/slo-demo/deployment.yaml b/05-gitops/manifests/slo-demo/deployment.yaml
+new file mode 100644
+index 0000000..d789d71
+--- /dev/null
++++ b/05-gitops/manifests/slo-demo/deployment.yaml
+@@ -0,0 +1,49 @@
++# Small, self-contained workload that the availability SLO probes (ADR-005).
++# No secrets and no external dependencies, so it is healthy as soon as it syncs.
++apiVersion: apps/v1
++kind: Deployment
++metadata:
++  name: demo-app
++  labels:
++    app: demo-app
++spec:
++  replicas: 2
++  selector:
++    matchLabels:
++      app: demo-app
++  template:
++    metadata:
++      labels:
++        app: demo-app
++    spec:
++      securityContext:
++        runAsNonRoot: true
++        seccompProfile:
++          type: RuntimeDefault
++      containers:
++        - name: demo-app
++          image: nginxinc/nginx-unprivileged:1.27-alpine
++          ports:
++            - containerPort: 8080
++          readinessProbe:
++            httpGet:
++              path: /
++              port: 8080
++            periodSeconds: 5
++          livenessProbe:
++            httpGet:
++              path: /
++              port: 8080
++            initialDelaySeconds: 10
++            periodSeconds: 10
++          securityContext:
++            allowPrivilegeEscalation: false
++            capabilities:
++              drop: ["ALL"]
++          resources:
++            requests:
++              cpu: 25m
++              memory: 32Mi
++            limits:
++              cpu: 100m
++              memory: 64Mi
+diff --git a/05-gitops/manifests/slo-demo/service.yaml b/05-gitops/manifests/slo-demo/service.yaml
+new file mode 100644
+index 0000000..61f0651
+--- /dev/null
++++ b/05-gitops/manifests/slo-demo/service.yaml
+@@ -0,0 +1,13 @@
++apiVersion: v1
++kind: Service
++metadata:
++  name: demo-app
++  labels:
++    app: demo-app
++spec:
++  selector:
++    app: demo-app
++  ports:
++    - name: http
++      port: 80
++      targetPort: 8080
+diff --git a/08-observability/slo/probe-demo-app.yaml b/08-observability/slo/probe-demo-app.yaml
+index 804e8a0..e4b3ce9 100644
+--- a/08-observability/slo/probe-demo-app.yaml
++++ b/08-observability/slo/probe-demo-app.yaml
+@@ -1,6 +1,6 @@
+-# Synthetic availability probe for demo-app. Needs the blackbox exporter
+-# (05-gitops/apps/blackbox-exporter.yaml) and the Prometheus selectors relaxed in
+-# 08-observability/install/kube-prometheus-stack-values.yaml.
++# Synthetic availability probe for demo-app (the workload in 05-gitops/manifests/slo-demo,
++# namespace slo-demo). Needs the blackbox exporter (05-gitops/apps/blackbox-exporter.yaml)
++# and the Prometheus selectors relaxed in 08-observability/install/kube-prometheus-stack-values.yaml.
+ apiVersion: monitoring.coreos.com/v1
+ kind: Probe
+ metadata:
+@@ -14,6 +14,6 @@ spec:
+   targets:
+     staticConfig:
+       static:
+-        - http://demo-app.default.svc.cluster.local/
++        - http://demo-app.slo-demo.svc.cluster.local/
+       labels:
+         service: demo-app
+diff --git a/README.md b/README.md
+index f18073a..824804c 100644
+--- a/README.md
++++ b/README.md
+@@ -33,7 +33,7 @@ flowchart LR
+ | `01-foundation/` | Terraform: 3-AZ VPC (single NAT gateway), EKS (KMS secret encryption, control-plane logs, API endpoint restricted to your CIDR), managed node group (IMDSv2, encrypted volumes), OIDC provider, Karpenter and ALB-controller IAM, Pod Identity, Karpenter discovery tags, Velero bucket and role | Implemented (live-tested before the latest changes; re-apply pending) |
+ | `02-autoscaling/` | Karpenter `EC2NodeClass` + `NodePool` | Implemented |
+ | `04-service-mesh/` | Istio gateway, 90/10 canary `VirtualService`, `DestinationRule`, `Service`, demo deployments | Lab |
+-| `05-gitops/` | Argo CD app-of-apps: ALB controller, Karpenter, demo-app, kube-prometheus-stack, blackbox exporter, Kyverno, Kyverno policies, observability config, Velero | Implemented, pending live sync |
++| `05-gitops/` | Argo CD app-of-apps: ALB controller, Karpenter, demo-app, slo-demo (the SLO's probe target), kube-prometheus-stack, blackbox exporter, Kyverno, Kyverno policies, observability config, Velero | Implemented, pending live sync |
+ | `06-secrets/` | External Secrets Operator `ClusterSecretStore` and `ExternalSecret`, IRSA trust-policy template | Implemented (ESO install and IAM role are manual) |
+ | `07-policy/` | Kyverno `disallow-latest-tag` and `verify-image-signatures` (both Audit), with offline tests | Implemented, signature check pending live run |
+ | `08-observability/` | Prometheus values, Grafana dashboard, availability SLO and burn-rate alerts, workload alerts, promtool tests, incident write-ups | Implemented, pending live fire drill |
+diff --git a/docs/slo.md b/docs/slo.md
+index 9e9becb..e13f2fc 100644
+--- a/docs/slo.md
++++ b/docs/slo.md
+@@ -22,10 +22,12 @@ a 15-minute outage pages, a healthy service stays silent, and a steady 4% failur
+ 
+ ## Live fire drill (record the result here)
+ 
++Wait about 15 minutes after the `slo-demo` app is healthy so the probe has history, then:
++
+ ```bash
+-kubectl scale deploy demo-app --replicas=0      # total outage
+-# Prometheus: probe_success drops to 0; DemoAppErrorBudgetFastBurn should fire in about 7 minutes
+-kubectl scale deploy demo-app --replicas=2      # restore
++kubectl -n slo-demo scale deploy demo-app --replicas=0      # total outage; note the time
++# Prometheus (port-forward 9090) -> Alerts: DemoAppErrorBudgetFastBurn goes Pending, then Firing after about 7 minutes
++kubectl -n slo-demo scale deploy demo-app --replicas=2      # restore
+ ```
+ 
+ | Date | Outage started | Alert fired | Time to fire |

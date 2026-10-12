@@ -33,7 +33,7 @@ flowchart LR
 | `01-foundation/` | Terraform: 3-AZ VPC (single NAT gateway), EKS (KMS secret encryption, control-plane logs, API endpoint restricted to your CIDR), managed node group (IMDSv2, encrypted volumes), OIDC provider, Karpenter and ALB-controller IAM, Pod Identity, Karpenter discovery tags, Velero bucket and role | Implemented (live-tested before the latest changes; re-apply pending) |
 | `02-autoscaling/` | Karpenter `EC2NodeClass` + `NodePool` | Implemented |
 | `04-service-mesh/` | Istio gateway, 90/10 canary `VirtualService`, `DestinationRule`, `Service`, demo deployments | Lab |
-| `05-gitops/` | Argo CD app-of-apps: ALB controller, Karpenter, demo-app, kube-prometheus-stack, blackbox exporter, Kyverno, Kyverno policies, observability config, Velero | Implemented, pending live sync |
+| `05-gitops/` | Argo CD app-of-apps: ALB controller, Karpenter, demo-app, slo-demo (the SLO's probe target), kube-prometheus-stack, blackbox exporter, Kyverno, Kyverno policies, observability config, Velero | Implemented, pending live sync |
 | `06-secrets/` | External Secrets Operator `ClusterSecretStore` and `ExternalSecret`, IRSA trust-policy template | Implemented (ESO install and IAM role are manual) |
 | `07-policy/` | Kyverno `disallow-latest-tag` and `verify-image-signatures` (both Audit), with offline tests | Implemented, signature check pending live run |
 | `08-observability/` | Prometheus values, Grafana dashboard, availability SLO and burn-rate alerts, workload alerts, promtool tests, incident write-ups | Implemented, pending live fire drill |
